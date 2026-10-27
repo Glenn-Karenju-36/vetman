@@ -55,6 +55,25 @@ class AuthRepository(
             }
     }
 
+    /**
+     * Reads the logged-in user's role ("veterinarian" or "pet_owner")
+     * from Firestore, where register() saved it under users/{uid}.
+     */
+    fun getUserRole(onResult: (Result<String>) -> Unit) {
+        val uid = auth.currentUser?.uid
+        if (uid == null) {
+            onResult(Result.failure(Exception("Not signed in")))
+            return
+        }
+        db.collection("users").document(uid).get()
+            .addOnSuccessListener { doc ->
+                val role = doc.getString("role")
+                if (role != null) onResult(Result.success(role))
+                else onResult(Result.failure(Exception("No role found for this account")))
+            }
+            .addOnFailureListener { onResult(Result.failure(it)) }
+    }
+
     /** Logs the current user out. */
     fun signOut() = auth.signOut()
 }
