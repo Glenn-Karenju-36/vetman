@@ -29,6 +29,7 @@ import com.example.vetman01.data.AuthRepository
 import com.example.vetman01.model.Patient
 import com.example.vetman01.ui.auth.AuthScreen
 import com.example.vetman01.ui.home.OwnerHomeScreen
+import com.example.vetman01.ui.patients.AddMedicalRecordScreen
 import com.example.vetman01.ui.patients.AddPatientScreen
 import com.example.vetman01.ui.patients.EditPatientScreen
 import com.example.vetman01.ui.patients.PatientListScreen
@@ -39,8 +40,8 @@ import com.google.firebase.auth.FirebaseAuth
 /**
  * MainActivity
  *
- * Handles user authentication, role-based navigation,
- * patient registration, viewing and editing.
+ * Handles authentication, user roles, and navigation between
+ * patient registration, profiles, editing, and medical records.
  */
 class MainActivity : ComponentActivity() {
 
@@ -54,36 +55,40 @@ class MainActivity : ComponentActivity() {
 
                 val repository = remember { AuthRepository() }
 
-                // Restore Firebase's existing authentication session.
+                // Restore the existing Firebase authentication session.
                 var signedIn by remember {
                     mutableStateOf(
                         FirebaseAuth.getInstance().currentUser != null
                     )
                 }
 
-                // User role determines access to veterinarian or owner screens.
+                // Determine which interface the signed-in user can access.
                 var role by remember { mutableStateOf<String?>(null) }
                 var roleError by remember { mutableStateOf<String?>(null) }
 
-                // Navigation state for patient-related screens.
+                // Control navigation between veterinarian screens.
                 var showAddPatient by remember { mutableStateOf(false) }
                 var showEditPatient by remember { mutableStateOf(false) }
+                var showAddMedicalRecord by remember { mutableStateOf(false) }
 
-                // Holds the selected patient's current information.
+                // Store the currently selected patient's information.
                 var selectedPatient by remember {
                     mutableStateOf<Patient?>(null)
                 }
 
-                // Changing this key reloads the list from Firestore.
+                // Increment these to reload Firestore data after saving.
                 var patientListVersion by remember { mutableStateOf(0) }
+                var patientProfileVersion by remember { mutableStateOf(0) }
 
                 // Handle the Android system Back button.
                 BackHandler(
                     enabled = showAddPatient ||
                             showEditPatient ||
+                            showAddMedicalRecord ||
                             selectedPatient != null
                 ) {
                     when {
+                        showAddMedicalRecord -> showAddMedicalRecord = false
                         showEditPatient -> showEditPatient = false
                         showAddPatient -> showAddPatient = false
                         selectedPatient != null -> selectedPatient = null
@@ -91,7 +96,8 @@ class MainActivity : ComponentActivity() {
                 }
 
                 /**
-                 * Retrieve the authenticated user's role from Firestore.
+                 * Retrieve the user's role from Firestore after login.
+                 * Veterinarians and pet owners use different screens.
                  */
                 LaunchedEffect(signedIn) {
                     if (signedIn) {
@@ -109,7 +115,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Clear authentication and navigation state on sign-out.
+                // Sign out and reset all navigation state.
                 val signOut = {
                     repository.signOut()
                     signedIn = false
@@ -117,8 +123,10 @@ class MainActivity : ComponentActivity() {
                     roleError = null
                     showAddPatient = false
                     showEditPatient = false
+                    showAddMedicalRecord = false
                     selectedPatient = null
                     patientListVersion = 0
+                    patientProfileVersion = 0
                 }
 
                 Scaffold(
@@ -133,7 +141,7 @@ class MainActivity : ComponentActivity() {
 
                         when {
 
-                            // Show login when no user is authenticated.
+                            // Display the login screen.
                             !signedIn -> {
                                 AuthScreen(
                                     onAuthSuccess = {
@@ -142,7 +150,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Display errors loading the user's role.
+                            // Display errors while retrieving the user's role.
                             roleError != null -> {
                                 Column(
                                     modifier = Modifier.fillMaxSize(),
@@ -174,7 +182,7 @@ class MainActivity : ComponentActivity() {
                                             onSaved = {
                                                 showAddPatient = false
 
-                                                // Reload the list after registration.
+                                                // Refresh the patient list.
                                                 patientListVersion++
 
                                                 Toast.makeText(
@@ -186,7 +194,30 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Edit the currently selected patient.
+                                    // Add a consultation to the selected patient.
+                                    showAddMedicalRecord && selectedPatient != null -> {
+                                        AddMedicalRecordScreen(
+                                            patient = selectedPatient!!,
+
+                                            onBack = {
+                                                showAddMedicalRecord = false
+                                            },
+
+                                            onSaved = {
+                                                // Return to the profile and reload history.
+                                                showAddMedicalRecord = false
+                                                patientProfileVersion++
+
+                                                Toast.makeText(
+                                                    this@MainActivity,
+                                                    "Medical record saved",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        )
+                                    }
+
+                                    // Edit an existing patient.
                                     showEditPatient && selectedPatient != null -> {
                                         EditPatientScreen(
                                             patient = selectedPatient!!,
@@ -197,14 +228,13 @@ class MainActivity : ComponentActivity() {
 
                                             onSaved = { updatedPatient ->
 
-                                                // Replace old patient data with updated values.
+                                                // Replace the old patient data.
                                                 selectedPatient = updatedPatient
-
-                                                // Return to the updated patient profile.
                                                 showEditPatient = false
 
-                                                // Refresh the list for the next visit.
+                                                // Refresh both list and profile.
                                                 patientListVersion++
+                                                patientProfileVersion++
 
                                                 Toast.makeText(
                                                     this@MainActivity,
@@ -215,20 +245,26 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Display the selected patient's profile.
+                                    // Display patient information and medical history.
                                     selectedPatient != null -> {
-                                        PatientProfileScreen(
-                                            patient = selectedPatient!!,
+                                        key(patientProfileVersion) {
+                                            PatientProfileScreen(
+                                                patient = selectedPatient!!,
 
-                                            onBack = {
-                                                selectedPatient = null
-                                            },
+                                                onBack = {
+                                                    selectedPatient = null
+                                                },
 
-                                            // Navigate to the prefilled edit form.
-                                            onEdit = {
-                                                showEditPatient = true
-                                            }
-                                        )
+                                                onEdit = {
+                                                    showEditPatient = true
+                                                },
+
+                                                // Open the medical record entry form.
+                                                onAddMedicalRecord = {
+                                                    showAddMedicalRecord = true
+                                                }
+                                            )
+                                        }
                                     }
 
                                     // Display registered patients.
@@ -239,7 +275,6 @@ class MainActivity : ComponentActivity() {
                                                     showAddPatient = true
                                                 },
 
-                                                // Open the tapped patient's profile.
                                                 onPatientClick = { patient ->
                                                     selectedPatient = patient
                                                 }
@@ -249,19 +284,19 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Preserve the pet-owner home screen.
+                            // Preserve the existing pet-owner screen.
                             role == "pet_owner" -> {
                                 OwnerHomeScreen(
                                     onSignOut = signOut
                                 )
                             }
 
-                            // Unrecognized user role.
+                            // Handle an unknown account role.
                             role != null -> {
                                 Text("Unknown role: $role")
                             }
 
-                            // Wait for Firebase to return the user's role.
+                            // Wait while Firebase retrieves the user's role.
                             else -> {
                                 Box(
                                     modifier = Modifier.fillMaxSize(),
