@@ -1,20 +1,35 @@
+
 package com.example.vetman01.model
 
 /**
- * One animal patient, stored in Firestore under pets/{id}.
- * Every field has a default value because Firestore needs an
- * empty constructor to turn a document back into a Patient.
+ * Represents an animal patient stored in Firestore.
+ *
+ * Each patient is saved under the "pets" collection.
+ * Default values allow Firebase to reconstruct Patient objects
+ * when retrieving records from Firestore.
  */
 data class Patient(
-    val id: String = "",          // document ID, filled in when saved
-    val vetId: String = "",       // uid of the vet who added the patient
+
+    // Unique Firestore document ID.
+    val id: String = "",
+
+    // Firebase UID of the veterinarian who registered the patient.
+    val vetId: String = "",
+
+    // Basic animal information.
     val petName: String = "",
-    val species: String = "",     // dog, cat, cattle, goat or other
+    val species: String = "",
     val breed: String = "",
-    val age: String = "",         // free text, e.g. "3 years" or "6 months"
-    val sex: String = "",         // male or female
+    val age: String = "",
+    val sex: String = "",
+
+    // Pet owner's contact information.
     val ownerName: String = "",
     val ownerPhone: String = "",
+
+    // Additional patient information.
     val notes: String = "",
-    val createdAt: Long = 0L      // time saved, in milliseconds
+
+    // Timestamp recorded when the patient was registered.
+    val createdAt: Long = 0L
 )
