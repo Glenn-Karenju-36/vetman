@@ -12,13 +12,14 @@ import androidx.compose.ui.unit.dp
 import com.example.vetman01.model.Patient
 
 /**
- * Displays the selected patient's details.
- * Receives patient data from MainActivity.
+ * Displays the selected patient's information.
+ * Provides navigation back to the list or to the edit form.
  */
 @Composable
 fun PatientProfileScreen(
     patient: Patient,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onEdit: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -27,7 +28,7 @@ fun PatientProfileScreen(
             .padding(16.dp)
     ) {
 
-        // Return to the patient list.
+        // Return to the veterinarian's patient list.
         TextButton(onClick = onBack) {
             Text("< Back to patients")
         }
@@ -41,7 +42,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Placeholder for a future pet profile photo.
+        // Placeholder for a future patient profile photo.
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -55,9 +56,19 @@ fun PatientProfileScreen(
             }
         }
 
+        Spacer(Modifier.height(16.dp))
+
+        // Open the editing form for the selected patient.
+        Button(
+            onClick = onEdit,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Edit Patient")
+        }
+
         Spacer(Modifier.height(24.dp))
 
-        // Display the animal's registered information.
+        // Animal information.
         Text(
             "Patient Information",
             style = MaterialTheme.typography.titleLarge
@@ -73,7 +84,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // Display the pet owner's contact information.
+        // Pet owner information.
         Text(
             "Owner Information",
             style = MaterialTheme.typography.titleLarge
@@ -86,7 +97,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // Notes entered when the patient was registered.
+        // Notes recorded during patient registration or editing.
         Text(
             "Patient Notes",
             style = MaterialTheme.typography.titleLarge
@@ -99,10 +110,12 @@ fun PatientProfileScreen(
         )
 
         Spacer(Modifier.height(24.dp))
+
         HorizontalDivider()
+
         Spacer(Modifier.height(16.dp))
 
-        // Medical records will be connected in a later stage.
+        // Medical history will be implemented later.
         Text(
             "Medical History",
             style = MaterialTheme.typography.titleLarge
@@ -115,7 +128,7 @@ fun PatientProfileScreen(
 }
 
 /**
- * Reusable row for displaying a patient field and its value.
+ * Displays a patient field alongside its value.
  */
 @Composable
 private fun PatientDetail(
