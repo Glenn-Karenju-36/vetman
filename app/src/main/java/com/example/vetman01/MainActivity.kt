@@ -30,6 +30,7 @@ import com.example.vetman01.model.Patient
 import com.example.vetman01.ui.auth.AuthScreen
 import com.example.vetman01.ui.home.OwnerHomeScreen
 import com.example.vetman01.ui.patients.AddPatientScreen
+import com.example.vetman01.ui.patients.EditPatientScreen
 import com.example.vetman01.ui.patients.PatientListScreen
 import com.example.vetman01.ui.patients.PatientProfileScreen
 import com.example.vetman01.ui.theme.Vetman01Theme
@@ -38,15 +39,14 @@ import com.google.firebase.auth.FirebaseAuth
 /**
  * MainActivity
  *
- * Entry point of Vetman.
- * Handles authentication, user roles and screen navigation.
+ * Handles user authentication, role-based navigation,
+ * patient registration, viewing and editing.
  */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Allow content to draw behind system bars.
         enableEdgeToEdge()
 
         setContent {
@@ -54,52 +54,44 @@ class MainActivity : ComponentActivity() {
 
                 val repository = remember { AuthRepository() }
 
-                // Restore the existing Firebase login session.
+                // Restore Firebase's existing authentication session.
                 var signedIn by remember {
                     mutableStateOf(
                         FirebaseAuth.getInstance().currentUser != null
                     )
                 }
 
-                // User role determines which interface is displayed.
-                var role by remember {
-                    mutableStateOf<String?>(null)
-                }
+                // User role determines access to veterinarian or owner screens.
+                var role by remember { mutableStateOf<String?>(null) }
+                var roleError by remember { mutableStateOf<String?>(null) }
 
-                var roleError by remember {
-                    mutableStateOf<String?>(null)
-                }
+                // Navigation state for patient-related screens.
+                var showAddPatient by remember { mutableStateOf(false) }
+                var showEditPatient by remember { mutableStateOf(false) }
 
-                // Controls navigation to the Add Patient form.
-                var showAddPatient by remember {
-                    mutableStateOf(false)
-                }
-
-                // Stores the patient selected from the patient list.
-                // Null means no patient profile is currently open.
+                // Holds the selected patient's current information.
                 var selectedPatient by remember {
                     mutableStateOf<Patient?>(null)
                 }
 
-                // Changes after saving to reload the patient list.
-                var patientListVersion by remember {
-                    mutableStateOf(0)
-                }
+                // Changing this key reloads the list from Firestore.
+                var patientListVersion by remember { mutableStateOf(0) }
 
-                // Android Back button returns to the patient list.
+                // Handle the Android system Back button.
                 BackHandler(
-                    enabled = showAddPatient || selectedPatient != null
+                    enabled = showAddPatient ||
+                            showEditPatient ||
+                            selectedPatient != null
                 ) {
                     when {
+                        showEditPatient -> showEditPatient = false
                         showAddPatient -> showAddPatient = false
                         selectedPatient != null -> selectedPatient = null
                     }
                 }
 
                 /**
-                 * Retrieve the user's role whenever login status changes.
-                 * Firestore stores whether the account is a veterinarian
-                 * or a pet owner.
+                 * Retrieve the authenticated user's role from Firestore.
                  */
                 LaunchedEffect(signedIn) {
                     if (signedIn) {
@@ -108,9 +100,7 @@ class MainActivity : ComponentActivity() {
 
                         repository.getUserRole { result ->
                             result
-                                .onSuccess {
-                                    role = it
-                                }
+                                .onSuccess { role = it }
                                 .onFailure {
                                     roleError = it.message
                                         ?: "Could not load your role"
@@ -119,13 +109,14 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Sign out and clear the current navigation state.
+                // Clear authentication and navigation state on sign-out.
                 val signOut = {
                     repository.signOut()
                     signedIn = false
                     role = null
                     roleError = null
                     showAddPatient = false
+                    showEditPatient = false
                     selectedPatient = null
                     patientListVersion = 0
                 }
@@ -140,10 +131,9 @@ class MainActivity : ComponentActivity() {
                             .fillMaxSize()
                     ) {
 
-                        // Display the appropriate screen for the user.
                         when {
 
-                            // Login and registration screen.
+                            // Show login when no user is authenticated.
                             !signedIn -> {
                                 AuthScreen(
                                     onAuthSuccess = {
@@ -152,7 +142,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Display authentication or role errors.
+                            // Display errors loading the user's role.
                             roleError != null -> {
                                 Column(
                                     modifier = Modifier.fillMaxSize(),
@@ -170,7 +160,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Veterinarian screens.
+                            // Veterinarian navigation.
                             role == "veterinarian" -> {
 
                                 when {
@@ -181,10 +171,10 @@ class MainActivity : ComponentActivity() {
                                             onBack = {
                                                 showAddPatient = false
                                             },
-
                                             onSaved = {
-                                                // Return to the list and reload records.
                                                 showAddPatient = false
+
+                                                // Reload the list after registration.
                                                 patientListVersion++
 
                                                 Toast.makeText(
@@ -196,28 +186,60 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Open the selected patient's profile.
-                                    selectedPatient != null -> {
+                                    // Edit the currently selected patient.
+                                    showEditPatient && selectedPatient != null -> {
+                                        EditPatientScreen(
+                                            patient = selectedPatient!!,
 
+                                            onBack = {
+                                                showEditPatient = false
+                                            },
+
+                                            onSaved = { updatedPatient ->
+
+                                                // Replace old patient data with updated values.
+                                                selectedPatient = updatedPatient
+
+                                                // Return to the updated patient profile.
+                                                showEditPatient = false
+
+                                                // Refresh the list for the next visit.
+                                                patientListVersion++
+
+                                                Toast.makeText(
+                                                    this@MainActivity,
+                                                    "Patient updated",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        )
+                                    }
+
+                                    // Display the selected patient's profile.
+                                    selectedPatient != null -> {
                                         PatientProfileScreen(
                                             patient = selectedPatient!!,
 
                                             onBack = {
                                                 selectedPatient = null
+                                            },
+
+                                            // Navigate to the prefilled edit form.
+                                            onEdit = {
+                                                showEditPatient = true
                                             }
                                         )
                                     }
 
-                                    // Display patients belonging to this vet.
+                                    // Display registered patients.
                                     else -> {
-
                                         key(patientListVersion) {
                                             PatientListScreen(
                                                 onAddPatient = {
                                                     showAddPatient = true
                                                 },
 
-                                                // Open the selected patient's profile.
+                                                // Open the tapped patient's profile.
                                                 onPatientClick = { patient ->
                                                     selectedPatient = patient
                                                 }
@@ -227,19 +249,19 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Preserve the existing pet-owner home screen.
+                            // Preserve the pet-owner home screen.
                             role == "pet_owner" -> {
                                 OwnerHomeScreen(
                                     onSignOut = signOut
                                 )
                             }
 
-                            // Handle an unrecognized role.
+                            // Unrecognized user role.
                             role != null -> {
                                 Text("Unknown role: $role")
                             }
 
-                            // Show a loading indicator while retrieving the role.
+                            // Wait for Firebase to return the user's role.
                             else -> {
                                 Box(
                                     modifier = Modifier.fillMaxSize(),
