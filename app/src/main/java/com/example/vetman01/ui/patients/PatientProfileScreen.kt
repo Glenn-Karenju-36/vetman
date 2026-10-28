@@ -2,8 +2,6 @@
 package com.example.vetman01.ui.patients
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -19,8 +17,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Displays a patient's profile and medical history.
- * Provides navigation to patient editing and medical record creation.
+ * Displays patient information, medical history and appointments.
+ * Provides navigation to editing, medical records and scheduling.
  */
 @Composable
 fun PatientProfileScreen(
@@ -28,6 +26,8 @@ fun PatientProfileScreen(
     onBack: () -> Unit,
     onEdit: () -> Unit,
     onAddMedicalRecord: () -> Unit,
+    onScheduleAppointment: () -> Unit,
+    onViewAppointments: () -> Unit,
     repository: MedicalRecordRepository = remember {
         MedicalRecordRepository()
     }
@@ -37,10 +37,15 @@ fun PatientProfileScreen(
         mutableStateOf<List<MedicalRecord>>(emptyList())
     }
 
-    var loading by remember(patient.id) { mutableStateOf(true) }
-    var error by remember(patient.id) { mutableStateOf<String?>(null) }
+    var loading by remember(patient.id) {
+        mutableStateOf(true)
+    }
 
-    // Retrieve this patient's medical history when the profile opens.
+    var error by remember(patient.id) {
+        mutableStateOf<String?>(null)
+    }
+
+    // Load this patient's medical history when the profile opens.
     LaunchedEffect(patient.id) {
         repository.getMedicalRecords(patient.id) { result ->
             loading = false
@@ -62,7 +67,7 @@ fun PatientProfileScreen(
             .padding(16.dp)
     ) {
 
-        // Return to the patient list.
+        // Return to the veterinarian's patient list.
         TextButton(onClick = onBack) {
             Text("< Back to patients")
         }
@@ -92,7 +97,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Open the existing patient editing screen.
+        // Open the existing patient editing form.
         Button(
             onClick = onEdit,
             modifier = Modifier.fillMaxWidth()
@@ -102,6 +107,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
+        // Animal information.
         Text(
             "Patient Information",
             style = MaterialTheme.typography.titleLarge
@@ -117,6 +123,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
+        // Pet owner information.
         Text(
             "Owner Information",
             style = MaterialTheme.typography.titleLarge
@@ -129,6 +136,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
+        // Notes entered during registration or editing.
         Text(
             "Patient Notes",
             style = MaterialTheme.typography.titleLarge
@@ -144,7 +152,35 @@ fun PatientProfileScreen(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
-        // Medical history for this patient.
+        // Appointment management for the selected patient.
+        Text(
+            "Appointments",
+            style = MaterialTheme.typography.titleLarge
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Button(
+            onClick = onScheduleAppointment,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Schedule Appointment")
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = onViewAppointments,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("View Appointments")
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        // Medical history section.
         Text(
             "Medical History",
             style = MaterialTheme.typography.titleLarge
@@ -152,7 +188,6 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        // Open the manual medical record form.
         Button(
             onClick = onAddMedicalRecord,
             modifier = Modifier.fillMaxWidth()
@@ -162,7 +197,7 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Display loading, error, empty, or populated states.
+        // Display medical records or their loading/error state.
         when {
             loading -> {
                 CircularProgressIndicator()
@@ -181,10 +216,7 @@ fun PatientProfileScreen(
 
             else -> {
                 medicalRecords.forEach { record ->
-
-                    // Each consultation appears as a separate card.
                     MedicalRecordCard(record)
-
                     Spacer(Modifier.height(12.dp))
                 }
             }
@@ -195,7 +227,7 @@ fun PatientProfileScreen(
 }
 
 /**
- * Displays a patient's field label and value.
+ * Displays a patient information field and its value.
  */
 @Composable
 private fun PatientDetail(
@@ -223,13 +255,12 @@ private fun PatientDetail(
 }
 
 /**
- * Displays one consultation from the patient's medical history.
- * Empty clinical fields are hidden.
+ * Displays a single consultation in the patient's medical history.
  */
 @Composable
 private fun MedicalRecordCard(record: MedicalRecord) {
 
-    // Format the saved visit timestamp for display.
+    // Convert the saved timestamp into a readable visit date.
     val date = remember(record.visitDate) {
         SimpleDateFormat(
             "dd MMM yyyy, HH:mm",
@@ -243,7 +274,6 @@ private fun MedicalRecordCard(record: MedicalRecord) {
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
-
             Text(
                 text = date,
                 style = MaterialTheme.typography.titleMedium
@@ -262,7 +292,7 @@ private fun MedicalRecordCard(record: MedicalRecord) {
 }
 
 /**
- * Shows a clinical field only when it contains information.
+ * Displays a clinical field only if information was recorded.
  */
 @Composable
 private fun MedicalDetail(
