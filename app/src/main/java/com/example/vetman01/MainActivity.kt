@@ -25,12 +25,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+
 import com.example.vetman01.data.AuthRepository
 import com.example.vetman01.model.Patient
 import com.example.vetman01.ui.auth.AuthScreen
 import com.example.vetman01.ui.home.OwnerHomeScreen
+import com.example.vetman01.ui.patients.AddAppointmentScreen
 import com.example.vetman01.ui.patients.AddMedicalRecordScreen
 import com.example.vetman01.ui.patients.AddPatientScreen
+import com.example.vetman01.ui.patients.AppointmentListScreen
 import com.example.vetman01.ui.patients.EditPatientScreen
 import com.example.vetman01.ui.patients.PatientListScreen
 import com.example.vetman01.ui.patients.PatientProfileScreen
@@ -38,10 +41,10 @@ import com.example.vetman01.ui.theme.Vetman01Theme
 import com.google.firebase.auth.FirebaseAuth
 
 /**
- * MainActivity
+ * Main entry point for Vetman.
  *
  * Handles authentication, user roles, and navigation between
- * patient registration, profiles, editing, and medical records.
+ * patient management, medical records and appointments.
  */
 class MainActivity : ComponentActivity() {
 
@@ -55,39 +58,50 @@ class MainActivity : ComponentActivity() {
 
                 val repository = remember { AuthRepository() }
 
-                // Restore the existing Firebase authentication session.
+                // Restore an existing Firebase login session.
                 var signedIn by remember {
                     mutableStateOf(
                         FirebaseAuth.getInstance().currentUser != null
                     )
                 }
 
-                // Determine which interface the signed-in user can access.
+                // Store the user's role and any loading errors.
                 var role by remember { mutableStateOf<String?>(null) }
                 var roleError by remember { mutableStateOf<String?>(null) }
 
-                // Control navigation between veterinarian screens.
+                // Patient-related navigation states.
                 var showAddPatient by remember { mutableStateOf(false) }
                 var showEditPatient by remember { mutableStateOf(false) }
                 var showAddMedicalRecord by remember { mutableStateOf(false) }
 
-                // Store the currently selected patient's information.
+                // Appointment-related navigation states.
+                var showAddAppointment by remember { mutableStateOf(false) }
+                var showAppointments by remember { mutableStateOf(false) }
+
+                // Currently selected patient.
                 var selectedPatient by remember {
                     mutableStateOf<Patient?>(null)
                 }
 
-                // Increment these to reload Firestore data after saving.
+                // Used to reload Firestore data after changes.
                 var patientListVersion by remember { mutableStateOf(0) }
                 var patientProfileVersion by remember { mutableStateOf(0) }
 
-                // Handle the Android system Back button.
+                /**
+                 * Handle Android's Back button.
+                 * Close the active form before returning to the patient list.
+                 */
                 BackHandler(
                     enabled = showAddPatient ||
                             showEditPatient ||
                             showAddMedicalRecord ||
+                            showAddAppointment ||
+                            showAppointments ||
                             selectedPatient != null
                 ) {
                     when {
+                        showAddAppointment -> showAddAppointment = false
+                        showAppointments -> showAppointments = false
                         showAddMedicalRecord -> showAddMedicalRecord = false
                         showEditPatient -> showEditPatient = false
                         showAddPatient -> showAddPatient = false
@@ -96,8 +110,8 @@ class MainActivity : ComponentActivity() {
                 }
 
                 /**
-                 * Retrieve the user's role from Firestore after login.
-                 * Veterinarians and pet owners use different screens.
+                 * Retrieve the user's role after authentication.
+                 * Determines whether to display veterinarian or owner screens.
                  */
                 LaunchedEffect(signedIn) {
                     if (signedIn) {
@@ -115,15 +129,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Sign out and reset all navigation state.
+                // Sign out and reset all navigation states.
                 val signOut = {
                     repository.signOut()
                     signedIn = false
                     role = null
                     roleError = null
+
                     showAddPatient = false
                     showEditPatient = false
                     showAddMedicalRecord = false
+                    showAddAppointment = false
+                    showAppointments = false
+
                     selectedPatient = null
                     patientListVersion = 0
                     patientProfileVersion = 0
@@ -141,7 +159,7 @@ class MainActivity : ComponentActivity() {
 
                         when {
 
-                            // Display the login screen.
+                            // Authentication screen.
                             !signedIn -> {
                                 AuthScreen(
                                     onAuthSuccess = {
@@ -150,7 +168,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Display errors while retrieving the user's role.
+                            // Display errors retrieving the user's role.
                             roleError != null -> {
                                 Column(
                                     modifier = Modifier.fillMaxSize(),
@@ -168,7 +186,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Veterinarian navigation.
+                            // Veterinarian screens.
                             role == "veterinarian" -> {
 
                                 when {
@@ -182,7 +200,7 @@ class MainActivity : ComponentActivity() {
                                             onSaved = {
                                                 showAddPatient = false
 
-                                                // Refresh the patient list.
+                                                // Reload the patient list.
                                                 patientListVersion++
 
                                                 Toast.makeText(
@@ -194,7 +212,39 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Add a consultation to the selected patient.
+                                    // Schedule an appointment.
+                                    showAddAppointment && selectedPatient != null -> {
+                                        AddAppointmentScreen(
+                                            patient = selectedPatient!!,
+
+                                            onBack = {
+                                                showAddAppointment = false
+                                            },
+
+                                            onSaved = {
+                                                showAddAppointment = false
+
+                                                Toast.makeText(
+                                                    this@MainActivity,
+                                                    "Appointment scheduled",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        )
+                                    }
+
+                                    // View, reschedule, complete or cancel appointments.
+                                    showAppointments && selectedPatient != null -> {
+                                        AppointmentListScreen(
+                                            patient = selectedPatient!!,
+
+                                            onBack = {
+                                                showAppointments = false
+                                            }
+                                        )
+                                    }
+
+                                    // Add a consultation to the patient's history.
                                     showAddMedicalRecord && selectedPatient != null -> {
                                         AddMedicalRecordScreen(
                                             patient = selectedPatient!!,
@@ -204,8 +254,9 @@ class MainActivity : ComponentActivity() {
                                             },
 
                                             onSaved = {
-                                                // Return to the profile and reload history.
                                                 showAddMedicalRecord = false
+
+                                                // Reload medical history.
                                                 patientProfileVersion++
 
                                                 Toast.makeText(
@@ -217,7 +268,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Edit an existing patient.
+                                    // Edit an existing patient's information.
                                     showEditPatient && selectedPatient != null -> {
                                         EditPatientScreen(
                                             patient = selectedPatient!!,
@@ -228,11 +279,10 @@ class MainActivity : ComponentActivity() {
 
                                             onSaved = { updatedPatient ->
 
-                                                // Replace the old patient data.
+                                                // Replace old patient data with saved values.
                                                 selectedPatient = updatedPatient
                                                 showEditPatient = false
 
-                                                // Refresh both list and profile.
                                                 patientListVersion++
                                                 patientProfileVersion++
 
@@ -245,8 +295,9 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Display patient information and medical history.
+                                    // Display patient profile and medical history.
                                     selectedPatient != null -> {
+
                                         key(patientProfileVersion) {
                                             PatientProfileScreen(
                                                 patient = selectedPatient!!,
@@ -259,9 +310,18 @@ class MainActivity : ComponentActivity() {
                                                     showEditPatient = true
                                                 },
 
-                                                // Open the medical record entry form.
                                                 onAddMedicalRecord = {
                                                     showAddMedicalRecord = true
+                                                },
+
+                                                // Navigate to appointment creation.
+                                                onScheduleAppointment = {
+                                                    showAddAppointment = true
+                                                },
+
+                                                // Navigate to appointment management.
+                                                onViewAppointments = {
+                                                    showAppointments = true
                                                 }
                                             )
                                         }
@@ -269,6 +329,7 @@ class MainActivity : ComponentActivity() {
 
                                     // Display registered patients.
                                     else -> {
+
                                         key(patientListVersion) {
                                             PatientListScreen(
                                                 onAddPatient = {
@@ -284,14 +345,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Preserve the existing pet-owner screen.
+                            // Preserve the existing pet-owner home screen.
                             role == "pet_owner" -> {
                                 OwnerHomeScreen(
                                     onSignOut = signOut
                                 )
                             }
 
-                            // Handle an unknown account role.
+                            // Unrecognized user role.
                             role != null -> {
                                 Text("Unknown role: $role")
                             }
