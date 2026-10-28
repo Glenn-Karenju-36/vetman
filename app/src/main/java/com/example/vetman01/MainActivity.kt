@@ -31,9 +31,11 @@ import com.example.vetman01.model.Patient
 import com.example.vetman01.ui.auth.AuthScreen
 import com.example.vetman01.ui.home.OwnerHomeScreen
 import com.example.vetman01.ui.patients.AddAppointmentScreen
+import com.example.vetman01.ui.patients.AddBillScreen
 import com.example.vetman01.ui.patients.AddMedicalRecordScreen
 import com.example.vetman01.ui.patients.AddPatientScreen
 import com.example.vetman01.ui.patients.AppointmentListScreen
+import com.example.vetman01.ui.patients.BillListScreen
 import com.example.vetman01.ui.patients.EditPatientScreen
 import com.example.vetman01.ui.patients.PatientListScreen
 import com.example.vetman01.ui.patients.PatientProfileScreen
@@ -44,7 +46,7 @@ import com.google.firebase.auth.FirebaseAuth
  * Main entry point for Vetman.
  *
  * Handles authentication, user roles, and navigation between
- * patient management, medical records and appointments.
+ * patient management, medical records, appointments and billing.
  */
 class MainActivity : ComponentActivity() {
 
@@ -65,25 +67,29 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // Store the user's role and any loading errors.
+                // User role and authentication errors.
                 var role by remember { mutableStateOf<String?>(null) }
                 var roleError by remember { mutableStateOf<String?>(null) }
 
-                // Patient-related navigation states.
+                // Patient-related navigation.
                 var showAddPatient by remember { mutableStateOf(false) }
                 var showEditPatient by remember { mutableStateOf(false) }
                 var showAddMedicalRecord by remember { mutableStateOf(false) }
 
-                // Appointment-related navigation states.
+                // Appointment-related navigation.
                 var showAddAppointment by remember { mutableStateOf(false) }
                 var showAppointments by remember { mutableStateOf(false) }
+
+                // Billing-related navigation.
+                var showAddBill by remember { mutableStateOf(false) }
+                var showBills by remember { mutableStateOf(false) }
 
                 // Currently selected patient.
                 var selectedPatient by remember {
                     mutableStateOf<Patient?>(null)
                 }
 
-                // Used to reload Firestore data after changes.
+                // Reload Firestore data after changes.
                 var patientListVersion by remember { mutableStateOf(0) }
                 var patientProfileVersion by remember { mutableStateOf(0) }
 
@@ -97,9 +103,13 @@ class MainActivity : ComponentActivity() {
                             showAddMedicalRecord ||
                             showAddAppointment ||
                             showAppointments ||
+                            showAddBill ||
+                            showBills ||
                             selectedPatient != null
                 ) {
                     when {
+                        showAddBill -> showAddBill = false
+                        showBills -> showBills = false
                         showAddAppointment -> showAddAppointment = false
                         showAppointments -> showAppointments = false
                         showAddMedicalRecord -> showAddMedicalRecord = false
@@ -111,7 +121,7 @@ class MainActivity : ComponentActivity() {
 
                 /**
                  * Retrieve the user's role after authentication.
-                 * Determines whether to display veterinarian or owner screens.
+                 * Determines veterinarian or pet-owner access.
                  */
                 LaunchedEffect(signedIn) {
                     if (signedIn) {
@@ -141,6 +151,8 @@ class MainActivity : ComponentActivity() {
                     showAddMedicalRecord = false
                     showAddAppointment = false
                     showAppointments = false
+                    showAddBill = false
+                    showBills = false
 
                     selectedPatient = null
                     patientListVersion = 0
@@ -168,7 +180,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Display errors retrieving the user's role.
+                            // Display role retrieval errors.
                             roleError != null -> {
                                 Column(
                                     modifier = Modifier.fillMaxSize(),
@@ -199,8 +211,6 @@ class MainActivity : ComponentActivity() {
                                             },
                                             onSaved = {
                                                 showAddPatient = false
-
-                                                // Reload the patient list.
                                                 patientListVersion++
 
                                                 Toast.makeText(
@@ -208,6 +218,38 @@ class MainActivity : ComponentActivity() {
                                                     "Patient saved",
                                                     Toast.LENGTH_SHORT
                                                 ).show()
+                                            }
+                                        )
+                                    }
+
+                                    // Create a bill for the selected patient.
+                                    showAddBill && selectedPatient != null -> {
+                                        AddBillScreen(
+                                            patient = selectedPatient!!,
+
+                                            onBack = {
+                                                showAddBill = false
+                                            },
+
+                                            onSaved = {
+                                                showAddBill = false
+
+                                                Toast.makeText(
+                                                    this@MainActivity,
+                                                    "Bill created",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        )
+                                    }
+
+                                    // Display bills, balances and payment history.
+                                    showBills && selectedPatient != null -> {
+                                        BillListScreen(
+                                            patient = selectedPatient!!,
+
+                                            onBack = {
+                                                showBills = false
                                             }
                                         )
                                     }
@@ -233,7 +275,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // View, reschedule, complete or cancel appointments.
+                                    // View and manage appointments.
                                     showAppointments && selectedPatient != null -> {
                                         AppointmentListScreen(
                                             patient = selectedPatient!!,
@@ -244,7 +286,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Add a consultation to the patient's history.
+                                    // Add a medical consultation.
                                     showAddMedicalRecord && selectedPatient != null -> {
                                         AddMedicalRecordScreen(
                                             patient = selectedPatient!!,
@@ -255,8 +297,6 @@ class MainActivity : ComponentActivity() {
 
                                             onSaved = {
                                                 showAddMedicalRecord = false
-
-                                                // Reload medical history.
                                                 patientProfileVersion++
 
                                                 Toast.makeText(
@@ -268,7 +308,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Edit an existing patient's information.
+                                    // Edit existing patient details.
                                     showEditPatient && selectedPatient != null -> {
                                         EditPatientScreen(
                                             patient = selectedPatient!!,
@@ -278,8 +318,6 @@ class MainActivity : ComponentActivity() {
                                             },
 
                                             onSaved = { updatedPatient ->
-
-                                                // Replace old patient data with saved values.
                                                 selectedPatient = updatedPatient
                                                 showEditPatient = false
 
@@ -295,9 +333,8 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Display patient profile and medical history.
+                                    // Display selected patient profile.
                                     selectedPatient != null -> {
-
                                         key(patientProfileVersion) {
                                             PatientProfileScreen(
                                                 patient = selectedPatient!!,
@@ -314,14 +351,22 @@ class MainActivity : ComponentActivity() {
                                                     showAddMedicalRecord = true
                                                 },
 
-                                                // Navigate to appointment creation.
                                                 onScheduleAppointment = {
                                                     showAddAppointment = true
                                                 },
 
-                                                // Navigate to appointment management.
                                                 onViewAppointments = {
                                                     showAppointments = true
+                                                },
+
+                                                // Open bill creation.
+                                                onCreateBill = {
+                                                    showAddBill = true
+                                                },
+
+                                                // Open billing and payment history.
+                                                onViewBills = {
+                                                    showBills = true
                                                 }
                                             )
                                         }
@@ -329,7 +374,6 @@ class MainActivity : ComponentActivity() {
 
                                     // Display registered patients.
                                     else -> {
-
                                         key(patientListVersion) {
                                             PatientListScreen(
                                                 onAddPatient = {
@@ -345,19 +389,19 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Preserve the existing pet-owner home screen.
+                            // Preserve the pet-owner home screen.
                             role == "pet_owner" -> {
                                 OwnerHomeScreen(
                                     onSignOut = signOut
                                 )
                             }
 
-                            // Unrecognized user role.
+                            // Handle unknown user roles.
                             role != null -> {
                                 Text("Unknown role: $role")
                             }
 
-                            // Wait while Firebase retrieves the user's role.
+                            // Wait for Firestore to retrieve the user's role.
                             else -> {
                                 Box(
                                     modifier = Modifier.fillMaxSize(),
