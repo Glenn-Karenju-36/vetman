@@ -1,13 +1,22 @@
 
 package com.example.vetman01.ui.patients
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+
 import com.example.vetman01.data.MedicalRecordRepository
 import com.example.vetman01.data.OwnerRecordsRepository
 import com.example.vetman01.model.Appointment
@@ -15,16 +24,16 @@ import com.example.vetman01.model.Bill
 import com.example.vetman01.model.MedicalRecord
 import com.example.vetman01.model.Patient
 import com.example.vetman01.model.Payment
+
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToLong
 
 /**
- * Complete read-only pet profile for owners.
- *
- * Includes medical history, appointments, bills
- * and payment history.
+ * Read-only patient profile for pet owners.
+ * All data is loaded through the existing repositories.
+ * No creation, editing or deletion is allowed here.
  */
 @Composable
 fun OwnerPatientProfileScreen(
@@ -37,12 +46,16 @@ fun OwnerPatientProfileScreen(
         OwnerRecordsRepository()
     }
 ) {
+    val colors = MaterialTheme.colorScheme
+
     var medicalRecords by remember(patient.id) {
         mutableStateOf<List<MedicalRecord>>(emptyList())
     }
+
     var appointments by remember(patient.id) {
         mutableStateOf<List<Appointment>>(emptyList())
     }
+
     var bills by remember(patient.id) {
         mutableStateOf<List<Bill>>(emptyList())
     }
@@ -50,9 +63,11 @@ fun OwnerPatientProfileScreen(
     var medicalLoading by remember(patient.id) {
         mutableStateOf(true)
     }
+
     var appointmentLoading by remember(patient.id) {
         mutableStateOf(true)
     }
+
     var billLoading by remember(patient.id) {
         mutableStateOf(true)
     }
@@ -60,53 +75,73 @@ fun OwnerPatientProfileScreen(
     var medicalError by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
+
     var appointmentError by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
+
     var billError by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
 
-    // Payment history is loaded only when a bill is expanded.
     var expandedBillId by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
+
     var payments by remember(patient.id) {
         mutableStateOf<List<Payment>>(emptyList())
     }
+
     var paymentsLoading by remember(patient.id) {
         mutableStateOf(false)
     }
+
     var paymentsError by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
 
-    // Load all three record categories when a pet is selected.
+    // Fetch existing medical and financial records.
+    // These repositories must continue enforcing owner access.
     LaunchedEffect(patient.id) {
         medicalRepository.getMedicalRecords(patient.id) { result ->
-            result.onSuccess {
-                medicalRecords = it
-            }.onFailure {
-                medicalError = it.message ?: "Could not load medical history"
-            }
+            result
+                .onSuccess {
+                    medicalRecords = it
+                    medicalError = null
+                }
+                .onFailure {
+                    medicalError = it.message
+                        ?: "Unable to load medical history."
+                }
+
             medicalLoading = false
         }
 
         ownerRepository.getAppointments(patient.id) { result ->
-            result.onSuccess {
-                appointments = it
-            }.onFailure {
-                appointmentError = it.message ?: "Could not load appointments"
-            }
+            result
+                .onSuccess {
+                    appointments = it
+                    appointmentError = null
+                }
+                .onFailure {
+                    appointmentError = it.message
+                        ?: "Unable to load appointments."
+                }
+
             appointmentLoading = false
         }
 
         ownerRepository.getBills(patient.id) { result ->
-            result.onSuccess {
-                bills = it
-            }.onFailure {
-                billError = it.message ?: "Could not load bills"
-            }
+            result
+                .onSuccess {
+                    bills = it
+                    billError = null
+                }
+                .onFailure {
+                    billError = it.message
+                        ?: "Unable to load bills."
+                }
+
             billLoading = false
         }
     }
@@ -117,268 +152,511 @@ fun OwnerPatientProfileScreen(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
+
         TextButton(onClick = onBack) {
-            Text("‹ Back to My Pets")
+            Text("← Back to My Pets")
         }
 
         Spacer(Modifier.height(12.dp))
 
         Text(
-            patient.petName,
-            style = MaterialTheme.typography.headlineMedium
+            text = patient.petName,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
         )
-        Text("Pet Profile")
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(4.dp))
 
-        // PET DETAILS
         Text(
-            "Pet Information",
-            style = MaterialTheme.typography.titleLarge
+            text = "Patient Profile",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onSurfaceVariant
         )
-
-        Spacer(Modifier.height(8.dp))
-
-        OwnerInfoRow("Name", patient.petName)
-        OwnerInfoRow("Species", patient.species)
-        OwnerInfoRow("Breed", patient.breed)
-        OwnerInfoRow("Age", patient.age)
-        OwnerInfoRow("Sex", patient.sex)
 
         Spacer(Modifier.height(20.dp))
 
-        Text(
-            "Owner Information",
-            style = MaterialTheme.typography.titleLarge
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OwnerInfoRow("Owner", patient.ownerName)
-        OwnerInfoRow("Phone", patient.ownerPhone)
-
-        Spacer(Modifier.height(24.dp))
-        HorizontalDivider()
-        Spacer(Modifier.height(16.dp))
-
-        // APPOINTMENTS
-        Text(
-            "Appointments",
-            style = MaterialTheme.typography.titleLarge
-        )
-        Spacer(Modifier.height(12.dp))
-
-        when {
-            appointmentLoading -> CircularProgressIndicator()
-
-            appointmentError != null -> Text(
-                appointmentError ?: "",
-                color = MaterialTheme.colorScheme.error
+        // Match the clinical patient profile photo area.
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = colors.primaryContainer
             )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                ClinicalOwnerPaw(
+                    modifier = Modifier.size(62.dp),
+                    color = colors.primary
+                )
 
-            appointments.isEmpty() -> Text(
-                "No appointments recorded."
-            )
-
-            else -> appointments.forEach { appointment ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            ownerDate(appointment.scheduledAt),
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Text("Status: ${appointment.status}")
-                        OwnerOptionalText("Reason", appointment.reason)
-                        OwnerOptionalText("Notes", appointment.notes)
-                    }
-                }
                 Spacer(Modifier.height(12.dp))
+
+                Text(
+                    text = patient.petName,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.onPrimaryContainer
+                )
+
+                Spacer(Modifier.height(4.dp))
+
+                Text(
+                    text = listOf(
+                        patient.species,
+                        patient.breed
+                    ).filter {
+                        it.isNotBlank()
+                    }.joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onPrimaryContainer
+                )
             }
         }
 
-        Spacer(Modifier.height(20.dp))
-        HorizontalDivider()
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
-        // BILLS
-        Text(
-            "Bills and Payments",
-            style = MaterialTheme.typography.titleLarge
-        )
+        Surface(
+            color = colors.surfaceVariant,
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text(
+                text = "Read-only patient information",
+                modifier = Modifier.padding(
+                    horizontal = 12.dp,
+                    vertical = 8.dp
+                ),
+                color = colors.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // PATIENT INFORMATION
+        OwnerClinicalHeader("Patient Information")
+
+        Spacer(Modifier.height(12.dp))
+
+        OwnerClinicalCard {
+            OwnerClinicalRow("Name", patient.petName)
+            OwnerClinicalRow("Species", patient.species)
+            OwnerClinicalRow("Breed", patient.breed)
+            OwnerClinicalRow("Age", patient.age)
+            OwnerClinicalRow("Sex", patient.sex)
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // OWNER INFORMATION
+        OwnerClinicalHeader("Owner Information")
+
+        Spacer(Modifier.height(12.dp))
+
+        OwnerClinicalCard {
+            OwnerClinicalRow("Owner Name", patient.ownerName)
+            OwnerClinicalRow("Phone", patient.ownerPhone)
+        }
+
+        if (patient.notes.isNotBlank()) {
+            Spacer(Modifier.height(24.dp))
+
+            OwnerClinicalHeader("Patient Notes")
+
+            Spacer(Modifier.height(12.dp))
+
+            OwnerClinicalCard {
+                Text(
+                    text = patient.notes,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // APPOINTMENTS
+        OwnerClinicalHeader("Appointments")
+
         Spacer(Modifier.height(12.dp))
 
         when {
-            billLoading -> CircularProgressIndicator()
+            appointmentLoading -> OwnerClinicalLoading()
 
-            billError != null -> Text(
-                billError ?: "",
-                color = MaterialTheme.colorScheme.error
-            )
+            appointmentError != null -> {
+                OwnerClinicalMessage(
+                    message = appointmentError
+                        ?: "Unable to load appointments.",
+                    isError = true
+                )
+            }
 
-            bills.isEmpty() -> Text(
-                "No bills recorded."
-            )
+            appointments.isEmpty() -> {
+                OwnerClinicalMessage(
+                    "No appointments recorded."
+                )
+            }
 
-            else -> bills.forEach { bill ->
-                val totalCents = (bill.amount * 100).roundToLong()
-                val paidCents = (bill.amountPaid * 100).roundToLong()
-                val balanceCents =
-                    (totalCents - paidCents).coerceAtLeast(0L)
+            else -> {
+                appointments
+                    .sortedByDescending { it.scheduledAt }
+                    .forEach { appointment ->
 
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            bill.description,
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        OwnerClinicalCard {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = clinicalOwnerDate(
+                                        appointment.scheduledAt
+                                    ),
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
 
-                        Text("Total: KSh ${ownerMoney(bill.amount)}")
-                        Text("Paid: KSh ${ownerMoney(bill.amountPaid)}")
-                        Text(
-                            "Balance: KSh ${
-                                ownerMoney(balanceCents / 100.0)
-                            }"
-                        )
-                        Text("Status: ${bill.status}")
-                        Text(
-                            ownerDate(bill.createdAt),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        OwnerOptionalText("Notes", bill.notes)
+                                OwnerClinicalStatus(
+                                    appointment.status
+                                )
+                            }
 
-                        Spacer(Modifier.height(8.dp))
+                            OwnerClinicalField(
+                                "Reason",
+                                appointment.reason
+                            )
 
-                        OutlinedButton(
-                            onClick = {
-                                if (expandedBillId == bill.id) {
-                                    expandedBillId = null
-                                    payments = emptyList()
-                                } else {
-                                    expandedBillId = bill.id
-                                    payments = emptyList()
-                                    paymentsError = null
-                                    paymentsLoading = true
-
-                                    ownerRepository.getPayments(
-                                        patientId = patient.id,
-                                        billId = bill.id
-                                    ) { result ->
-                                        // Ignore an older request if
-                                        // another bill is now selected.
-                                        if (expandedBillId == bill.id) {
-                                            result.onSuccess {
-                                                payments = it
-                                            }.onFailure {
-                                                paymentsError = it.message
-                                                    ?: "Could not load payments"
-                                            }
-                                            paymentsLoading = false
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                if (expandedBillId == bill.id)
-                                    "Hide Payment History"
-                                else
-                                    "View Payment History"
+                            OwnerClinicalField(
+                                "Notes",
+                                appointment.notes
                             )
                         }
 
-                        if (expandedBillId == bill.id) {
-                            Spacer(Modifier.height(8.dp))
-
-                            when {
-                                paymentsLoading -> CircularProgressIndicator()
-
-                                paymentsError != null -> Text(
-                                    paymentsError ?: "",
-                                    color = MaterialTheme.colorScheme.error
-                                )
-
-                                payments.isEmpty() -> Text(
-                                    "No payments recorded."
-                                )
-
-                                else -> payments.forEach { payment ->
-                                    HorizontalDivider()
-                                    Spacer(Modifier.height(8.dp))
-
-                                    Text(
-                                        "KSh ${ownerMoney(payment.amount)}",
-                                        style = MaterialTheme.typography.titleSmall
-                                    )
-                                    Text("Method: ${payment.method}")
-                                    OwnerOptionalText(
-                                        "Reference",
-                                        payment.reference
-                                    )
-                                    Text(
-                                        ownerDate(payment.createdAt),
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-
-                                    Spacer(Modifier.height(8.dp))
-                                }
-                            }
-                        }
+                        Spacer(Modifier.height(12.dp))
                     }
-                }
-
-                Spacer(Modifier.height(12.dp))
             }
         }
 
-        Spacer(Modifier.height(20.dp))
-        HorizontalDivider()
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
-        // MEDICAL HISTORY
-        Text(
-            "Medical History",
-            style = MaterialTheme.typography.titleLarge
-        )
+        // BILLING
+        OwnerClinicalHeader("Billing & Payments")
+
         Spacer(Modifier.height(12.dp))
 
         when {
-            medicalLoading -> CircularProgressIndicator()
+            billLoading -> OwnerClinicalLoading()
 
-            medicalError != null -> Text(
-                medicalError ?: "",
-                color = MaterialTheme.colorScheme.error
-            )
+            billError != null -> {
+                OwnerClinicalMessage(
+                    message = billError
+                        ?: "Unable to load bills.",
+                    isError = true
+                )
+            }
 
-            medicalRecords.isEmpty() -> Text(
-                "No medical records available."
-            )
+            bills.isEmpty() -> {
+                OwnerClinicalMessage(
+                    "No bills recorded."
+                )
+            }
 
-            else -> medicalRecords.forEach { record ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            ownerDate(record.visitDate),
-                            style = MaterialTheme.typography.titleMedium
-                        )
+            else -> {
+                bills
+                    .sortedByDescending { it.createdAt }
+                    .forEach { bill ->
 
-                        OwnerOptionalText("Symptoms", record.symptoms)
-                        OwnerOptionalText("Diagnosis", record.diagnosis)
-                        OwnerOptionalText("Treatment", record.treatment)
-                        OwnerOptionalText("Medications", record.medications)
-                        OwnerOptionalText("Procedures", record.procedures)
-                        OwnerOptionalText("Notes", record.notes)
+                        val totalCents =
+                            (bill.amount * 100).roundToLong()
+
+                        val paidCents =
+                            (bill.amountPaid * 100).roundToLong()
+
+                        val balanceCents =
+                            (totalCents - paidCents)
+                                .coerceAtLeast(0L)
+
+                        OwnerClinicalCard {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = bill.description.ifBlank {
+                                        "Veterinary Bill"
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+
+                                OwnerClinicalStatus(
+                                    bill.status
+                                )
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+
+                            OwnerClinicalRow(
+                                "Total",
+                                "KSh ${clinicalOwnerMoney(bill.amount)}"
+                            )
+
+                            OwnerClinicalRow(
+                                "Paid",
+                                "KSh ${clinicalOwnerMoney(bill.amountPaid)}"
+                            )
+
+                            HorizontalDivider(
+                                modifier = Modifier.padding(
+                                    vertical = 8.dp
+                                ),
+                                color = colors.outlineVariant
+                            )
+
+                            OwnerClinicalRow(
+                                "Balance",
+                                "KSh ${
+                                    clinicalOwnerMoney(
+                                        balanceCents / 100.0
+                                    )
+                                }",
+                                emphasize = true
+                            )
+
+                            OwnerClinicalRow(
+                                "Created",
+                                clinicalOwnerDate(bill.createdAt)
+                            )
+
+                            OwnerClinicalField(
+                                "Notes",
+                                bill.notes
+                            )
+
+                            Spacer(Modifier.height(10.dp))
+
+                            OutlinedButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                onClick = {
+                                    if (expandedBillId == bill.id) {
+                                        expandedBillId = null
+                                        payments = emptyList()
+                                        paymentsError = null
+                                        paymentsLoading = false
+                                    } else {
+                                        expandedBillId = bill.id
+                                        payments = emptyList()
+                                        paymentsError = null
+                                        paymentsLoading = true
+
+                                        ownerRepository.getPayments(
+                                            patientId = patient.id,
+                                            billId = bill.id
+                                        ) { result ->
+                                            // Ignore responses from bills
+                                            // that are no longer selected.
+                                            if (expandedBillId == bill.id) {
+                                                result
+                                                    .onSuccess {
+                                                        payments = it
+                                                    }
+                                                    .onFailure {
+                                                        paymentsError =
+                                                            it.message
+                                                                ?: "Unable to load payments."
+                                                    }
+
+                                                paymentsLoading = false
+                                            }
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text(
+                                    if (expandedBillId == bill.id) {
+                                        "Hide Payment History"
+                                    } else {
+                                        "View Payment History"
+                                    }
+                                )
+                            }
+
+                            if (expandedBillId == bill.id) {
+                                Spacer(Modifier.height(12.dp))
+
+                                HorizontalDivider(
+                                    color = colors.outlineVariant
+                                )
+
+                                Spacer(Modifier.height(12.dp))
+
+                                Text(
+                                    text = "Payment History",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+
+                                Spacer(Modifier.height(8.dp))
+
+                                when {
+                                    paymentsLoading -> {
+                                        OwnerClinicalLoading()
+                                    }
+
+                                    paymentsError != null -> {
+                                        OwnerClinicalMessage(
+                                            message = paymentsError
+                                                ?: "Unable to load payments.",
+                                            isError = true
+                                        )
+                                    }
+
+                                    payments.isEmpty() -> {
+                                        Text(
+                                            text = "No payments recorded.",
+                                            color = colors.onSurfaceVariant,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+
+                                    else -> {
+                                        payments
+                                            .sortedByDescending {
+                                                it.createdAt
+                                            }
+                                            .forEachIndexed { index, payment ->
+
+                                                if (index > 0) {
+                                                    HorizontalDivider(
+                                                        modifier = Modifier.padding(
+                                                            vertical = 10.dp
+                                                        ),
+                                                        color = colors.outlineVariant
+                                                    )
+                                                }
+
+                                                Text(
+                                                    text = "KSh ${
+                                                        clinicalOwnerMoney(
+                                                            payment.amount
+                                                        )
+                                                    }",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.primary
+                                                )
+
+                                                OwnerClinicalRow(
+                                                    "Method",
+                                                    payment.method
+                                                )
+
+                                                if (payment.reference.isNotBlank()) {
+                                                    OwnerClinicalRow(
+                                                        "Reference",
+                                                        payment.reference
+                                                    )
+                                                }
+
+                                                OwnerClinicalRow(
+                                                    "Date",
+                                                    clinicalOwnerDate(
+                                                        payment.createdAt
+                                                    )
+                                                )
+                                            }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
                     }
-                }
-                Spacer(Modifier.height(12.dp))
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // MEDICAL HISTORY
+        OwnerClinicalHeader("Medical History")
+
+        Spacer(Modifier.height(12.dp))
+
+        when {
+            medicalLoading -> OwnerClinicalLoading()
+
+            medicalError != null -> {
+                OwnerClinicalMessage(
+                    message = medicalError
+                        ?: "Unable to load medical history.",
+                    isError = true
+                )
+            }
+
+            medicalRecords.isEmpty() -> {
+                OwnerClinicalMessage(
+                    "No medical records available."
+                )
+            }
+
+            else -> {
+                medicalRecords
+                    .sortedByDescending { it.visitDate }
+                    .forEach { record ->
+
+                        OwnerClinicalCard {
+                            Text(
+                                text = clinicalOwnerDate(
+                                    record.visitDate
+                                ),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.primary
+                            )
+
+                            Spacer(Modifier.height(6.dp))
+
+                            OwnerClinicalField(
+                                "Symptoms",
+                                record.symptoms
+                            )
+
+                            OwnerClinicalField(
+                                "Diagnosis",
+                                record.diagnosis
+                            )
+
+                            OwnerClinicalField(
+                                "Treatment",
+                                record.treatment
+                            )
+
+                            OwnerClinicalField(
+                                "Medications",
+                                record.medications
+                            )
+
+                            OwnerClinicalField(
+                                "Procedures",
+                                record.procedures
+                            )
+
+                            OwnerClinicalField(
+                                "Notes",
+                                record.notes
+                            )
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                    }
             }
         }
 
@@ -386,48 +664,248 @@ fun OwnerPatientProfileScreen(
     }
 }
 
-/** Display an individual pet or owner detail. */
+/**
+ * Custom paw placeholder.
+ *
+ * Uses theme colour rather than platform-dependent
+ * emoji artwork. No image dependency is required.
+ */
 @Composable
-private fun OwnerInfoRow(
+private fun ClinicalOwnerPaw(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary
+) {
+    Canvas(modifier = modifier) {
+        drawClinicalPaw(color)
+    }
+}
+
+private fun DrawScope.drawClinicalPaw(color: Color) {
+    val w = size.width
+    val h = size.height
+    val radius = w * 0.095f
+
+    // Four toe pads.
+    drawCircle(
+        color = color,
+        radius = radius,
+        center = Offset(w * 0.23f, h * 0.31f)
+    )
+
+    drawCircle(
+        color = color,
+        radius = radius,
+        center = Offset(w * 0.42f, h * 0.18f)
+    )
+
+    drawCircle(
+        color = color,
+        radius = radius,
+        center = Offset(w * 0.63f, h * 0.18f)
+    )
+
+    drawCircle(
+        color = color,
+        radius = radius,
+        center = Offset(w * 0.81f, h * 0.33f)
+    )
+
+    // Main pad.
+    drawOval(
+        color = color,
+        topLeft = Offset(w * 0.22f, h * 0.43f),
+        size = androidx.compose.ui.geometry.Size(
+            w * 0.57f,
+            h * 0.43f
+        )
+    )
+}
+
+/**
+ * Same heading treatment across clinical screens.
+ */
+@Composable
+private fun OwnerClinicalHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary
+    )
+}
+
+/**
+ * White clinical card with subtle outline.
+ */
+@Composable
+private fun OwnerClinicalCard(
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
+        ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            content = content
+        )
+    }
+}
+
+/**
+ * Two-column read-only detail row.
+ */
+@Composable
+private fun OwnerClinicalRow(
     label: String,
-    value: String
+    value: String,
+    emphasize: Boolean = false
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
+            .padding(vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            label,
-            modifier = Modifier.weight(1f)
+            text = label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
         Text(
-            value.ifBlank { "Not provided" },
-            modifier = Modifier.weight(2f)
+            text = value.ifBlank { "Not provided" },
+            modifier = Modifier.weight(1.5f),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (emphasize) {
+                FontWeight.Bold
+            } else {
+                FontWeight.Medium
+            },
+            color = if (emphasize) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            }
         )
     }
 }
 
-/** Show optional clinical or billing information. */
+/**
+ * Optional long-form text for clinical notes.
+ */
 @Composable
-private fun OwnerOptionalText(
+private fun OwnerClinicalField(
     label: String,
     value: String
 ) {
     if (value.isNotBlank()) {
-        Text("$label: $value")
+        Column(
+            modifier = Modifier.padding(vertical = 5.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 }
 
-/** Format Firestore timestamps. */
-private fun ownerDate(timestamp: Long): String {
+/**
+ * Neutral clinical status label.
+ */
+@Composable
+private fun OwnerClinicalStatus(status: String) {
+    val colors = MaterialTheme.colorScheme
+
+    Surface(
+        color = colors.primaryContainer,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(
+            text = status.replaceFirstChar {
+                it.uppercase()
+            },
+            modifier = Modifier.padding(
+                horizontal = 10.dp,
+                vertical = 6.dp
+            ),
+            style = MaterialTheme.typography.labelMedium,
+            color = colors.onPrimaryContainer
+        )
+    }
+}
+
+@Composable
+private fun OwnerClinicalLoading() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(20.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(26.dp),
+            strokeWidth = 2.dp
+        )
+    }
+}
+
+@Composable
+private fun OwnerClinicalMessage(
+    message: String,
+    isError: Boolean = false
+) {
+    val colors = MaterialTheme.colorScheme
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = colors.surfaceVariant
+        )
+    ) {
+        Text(
+            text = message,
+            modifier = Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (isError) {
+                colors.error
+            } else {
+                colors.onSurfaceVariant
+            }
+        )
+    }
+}
+
+private fun clinicalOwnerDate(timestamp: Long): String {
     return SimpleDateFormat(
         "dd MMM yyyy, HH:mm",
         Locale.getDefault()
     ).format(Date(timestamp))
 }
 
-/** Format Kenyan Shilling amounts to two decimal places. */
-private fun ownerMoney(amount: Double): String {
-    return String.format(Locale.US, "%,.2f", amount)
+private fun clinicalOwnerMoney(amount: Double): String {
+    return String.format(
+        Locale.US,
+        "%,.2f",
+        amount
+    )
 }
