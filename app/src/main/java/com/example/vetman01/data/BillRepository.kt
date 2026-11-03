@@ -8,10 +8,13 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlin.math.roundToLong
 
 /**
- * Manages bills and payment records in Firestore.
+ * Manages veterinary bills and payment records in Firestore.
  *
  * bills/{billId}
  * bills/{billId}/payments/{paymentId}
+ *
+ * Screens interact with this repository rather than
+ * accessing Firestore directly.
  */
 class BillRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
@@ -20,7 +23,9 @@ class BillRepository(
 
     /**
      * CREATE BILL
-     * Creates a bill for a patient registered by the veterinarian.
+     *
+     * Creates a new bill for a patient registered
+     * by the currently authenticated veterinarian.
      */
     fun addBill(
         bill: Bill,
@@ -33,7 +38,8 @@ class BillRepository(
             return
         }
 
-        if (bill.patientId.isBlank() ||
+        if (
+            bill.patientId.isBlank() ||
             !bill.amount.isFinite() ||
             bill.amount <= 0.0
         ) {
@@ -41,13 +47,14 @@ class BillRepository(
             return
         }
 
-        // Confirm that the patient belongs to this veterinarian.
+        // Confirm that the selected patient belongs to this vet.
         db.collection("pets")
             .document(bill.patientId)
             .get()
             .addOnSuccessListener { patient ->
 
-                if (!patient.exists() ||
+                if (
+                    !patient.exists() ||
                     patient.getString("vetId") != vetId
                 ) {
                     onResult(
@@ -58,16 +65,17 @@ class BillRepository(
                     return@addOnSuccessListener
                 }
 
-                // Create a unique bill with an unpaid starting balance.
                 val doc = db.collection("bills").document()
                 val now = System.currentTimeMillis()
 
+                // New bills begin unpaid and have no payment history.
                 val newBill = bill.copy(
                     id = doc.id,
                     vetId = vetId,
                     amountPaid = 0.0,
                     status = "unpaid",
                     paymentMethod = "",
+                    lastPaymentId = "",
                     createdAt = now,
                     updatedAt = now
                 )
@@ -87,7 +95,9 @@ class BillRepository(
 
     /**
      * GET BILLS
-     * Retrieves the current veterinarian's bills, newest first.
+     *
+     * Retrieves the current veterinarian's bills,
+     * ordered from newest to oldest.
      */
     fun getBills(
         onResult: (Result<List<Bill>>) -> Unit
@@ -105,8 +115,12 @@ class BillRepository(
             .addOnSuccessListener { snapshot ->
 
                 val bills = snapshot.documents
-                    .mapNotNull { it.toObject(Bill::class.java) }
-                    .sortedByDescending { it.createdAt }
+                    .mapNotNull {
+                        it.toObject(Bill::class.java)
+                    }
+                    .sortedByDescending {
+                        it.createdAt
+                    }
 
                 onResult(Result.success(bills))
             }
@@ -118,10 +132,11 @@ class BillRepository(
     /**
      * RECORD PAYMENT
      *
-     * Records a payment and updates its bill in one transaction.
-     * Both operations succeed together or fail together.
+     * Creates a payment record and updates its parent bill
+     * inside one Firestore transaction.
      *
-     * The reference is optional for cash payments.
+     * The bill's lastPaymentId points to the payment document
+     * associated with the latest balance update.
      */
     fun recordPayment(
         billId: String,
@@ -143,7 +158,8 @@ class BillRepository(
             "Airtel Money"
         )
 
-        if (billId.isBlank() ||
+        if (
+            billId.isBlank() ||
             !paymentAmount.isFinite() ||
             paymentAmount <= 0.0 ||
             paymentMethod !in allowedMethods
@@ -152,7 +168,7 @@ class BillRepository(
             return
         }
 
-        // Convert payments to cents to compare balances reliably.
+        // Convert KSh values to cents for balance comparisons.
         val paymentCents = (paymentAmount * 100).roundToLong()
 
         if (paymentCents <= 0L) {
@@ -162,17 +178,19 @@ class BillRepository(
 
         val billRef = db.collection("bills").document(billId)
 
-        // Generate the payment ID before starting the transaction.
+        // Generate the payment ID outside the transaction.
+        // Firestore may retry the transaction automatically.
         val paymentRef = billRef
             .collection("payments")
             .document()
 
         db.runTransaction { transaction ->
 
-            // Read the bill and verify veterinarian ownership.
+            // Read and verify the bill before performing writes.
             val snapshot = transaction.get(billRef)
 
-            if (!snapshot.exists() ||
+            if (
+                !snapshot.exists() ||
                 snapshot.getString("vetId") != vetId
             ) {
                 throw Exception("Bill not found or access denied")
@@ -186,15 +204,16 @@ class BillRepository(
             val totalCents = (totalAmount * 100).roundToLong()
             val paidCents = (alreadyPaid * 100).roundToLong()
 
-            // Prevent overpayments or updates to invalid balances.
-            if (paymentCents > totalCents - paidCents) {
+            // Prevent overpayments.
+            if (
+                paymentCents > totalCents - paidCents
+            ) {
                 throw Exception("Payment exceeds outstanding balance")
             }
 
             val newPaidCents = paidCents + paymentCents
             val newAmountPaid = newPaidCents / 100.0
 
-            // Determine the new payment status.
             val newStatus = when {
                 newPaidCents >= totalCents -> "paid"
                 newPaidCents > 0L -> "partial"
@@ -203,7 +222,7 @@ class BillRepository(
 
             val now = System.currentTimeMillis()
 
-            // Create a separate history entry for this payment.
+            // Prepare the individual payment record.
             val payment = Payment(
                 id = paymentRef.id,
                 billId = billId,
@@ -214,16 +233,24 @@ class BillRepository(
                 vetId = vetId
             )
 
+            // Write the payment history entry.
             transaction.set(paymentRef, payment)
 
-            // Update the parent bill's balance and status.
+            /**
+             * Update the bill in the same transaction.
+             *
+             * lastPaymentId connects this balance change to
+             * the newly created payment, allowing security
+             * rules to validate the relationship.
+             */
             transaction.update(
                 billRef,
                 mapOf(
                     "amountPaid" to newAmountPaid,
                     "status" to newStatus,
                     "paymentMethod" to paymentMethod,
-                    "updatedAt" to now
+                    "updatedAt" to now,
+                    "lastPaymentId" to paymentRef.id
                 )
             )
 
@@ -240,8 +267,8 @@ class BillRepository(
     /**
      * GET PAYMENT HISTORY
      *
-     * Retrieves individual payments for a bill after
-     * confirming veterinarian ownership.
+     * Retrieves payments for a bill after verifying
+     * that it belongs to the logged-in veterinarian.
      */
     fun getPayments(
         billId: String,
@@ -261,11 +288,12 @@ class BillRepository(
 
         val billRef = db.collection("bills").document(billId)
 
-        // Verify ownership before requesting payment history.
+        // Verify ownership before retrieving payment history.
         billRef.get()
             .addOnSuccessListener { billSnapshot ->
 
-                if (!billSnapshot.exists() ||
+                if (
+                    !billSnapshot.exists() ||
                     billSnapshot.getString("vetId") != vetId
                 ) {
                     onResult(
@@ -280,12 +308,13 @@ class BillRepository(
                     .get()
                     .addOnSuccessListener { snapshot ->
 
-                        // Display the most recent payments first.
                         val payments = snapshot.documents
                             .mapNotNull {
                                 it.toObject(Payment::class.java)
                             }
-                            .sortedByDescending { it.createdAt }
+                            .sortedByDescending {
+                                it.createdAt
+                            }
 
                         onResult(Result.success(payments))
                     }
