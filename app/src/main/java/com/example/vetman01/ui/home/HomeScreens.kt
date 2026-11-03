@@ -21,6 +21,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -37,7 +39,6 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-// Minimal Clinical palette.
 private val ClinicalGreen = Color(0xFF176B54)
 private val ClinicalLight = Color(0xFFEAF6F0)
 private val ClinicalText = Color(0xFF182720)
@@ -45,10 +46,7 @@ private val ClinicalMuted = Color(0xFF64736B)
 private val ClinicalBorder = Color(0xFFE2EAE5)
 
 /**
- * Custom Vetman paw icon.
- *
- * Drawn as a vector using Compose Canvas.
- * No external images or icon dependencies required.
+ * Vetman's custom paw icon.
  */
 @Composable
 private fun PawIcon(
@@ -64,60 +62,59 @@ private fun DrawScope.drawPaw(color: Color) {
     val w = size.width
     val h = size.height
 
-    // Four paw toes.
     drawCircle(
         color = color,
         radius = w * 0.105f,
-        center = androidx.compose.ui.geometry.Offset(w * 0.20f, h * 0.30f)
+        center = Offset(w * 0.20f, h * 0.30f)
     )
 
     drawCircle(
         color = color,
         radius = w * 0.115f,
-        center = androidx.compose.ui.geometry.Offset(w * 0.40f, h * 0.17f)
+        center = Offset(w * 0.40f, h * 0.17f)
     )
 
     drawCircle(
         color = color,
         radius = w * 0.115f,
-        center = androidx.compose.ui.geometry.Offset(w * 0.63f, h * 0.17f)
+        center = Offset(w * 0.63f, h * 0.17f)
     )
 
     drawCircle(
         color = color,
         radius = w * 0.105f,
-        center = androidx.compose.ui.geometry.Offset(w * 0.83f, h * 0.30f)
+        center = Offset(w * 0.83f, h * 0.30f)
     )
 
-    // Main paw pad.
     drawOval(
         color = color,
-        topLeft = androidx.compose.ui.geometry.Offset(
-            w * 0.23f,
-            h * 0.43f
-        ),
-        size = androidx.compose.ui.geometry.Size(
-            w * 0.55f,
-            h * 0.42f
-        )
+        topLeft = Offset(w * 0.23f, h * 0.43f),
+        size = Size(w * 0.55f, h * 0.42f)
     )
 }
 
 /**
- * Veterinarian dashboard.
+ * Main veterinarian dashboard.
  *
- * Displays real patient and appointment data.
- * Uses Material icons and Vetman's custom paw icon.
+ * My Patients, Appointments and Billing each
+ * have independent navigation callbacks.
  */
 @Composable
 fun VetHomeScreen(
     onAddPatient: () -> Unit,
     onViewPatients: () -> Unit,
+    onViewAppointments: () -> Unit,
+    onViewBills: () -> Unit,
     onPatientClick: (Patient) -> Unit,
     onSignOut: () -> Unit
 ) {
-    val patientRepository = remember { PatientRepository() }
-    val appointmentRepository = remember { AppointmentRepository() }
+    val patientRepository = remember {
+        PatientRepository()
+    }
+
+    val appointmentRepository = remember {
+        AppointmentRepository()
+    }
 
     var patients by remember {
         mutableStateOf<List<Patient>>(emptyList())
@@ -127,8 +124,13 @@ fun VetHomeScreen(
         mutableStateOf<List<Appointment>>(emptyList())
     }
 
-    var patientsLoading by remember { mutableStateOf(true) }
-    var appointmentsLoading by remember { mutableStateOf(true) }
+    var patientsLoading by remember {
+        mutableStateOf(true)
+    }
+
+    var appointmentsLoading by remember {
+        mutableStateOf(true)
+    }
 
     var patientsError by remember {
         mutableStateOf<String?>(null)
@@ -138,27 +140,32 @@ fun VetHomeScreen(
         mutableStateOf<String?>(null)
     }
 
-    // Retrieve dashboard data from existing repositories.
+    // Load actual dashboard data from Firestore repositories.
     LaunchedEffect(Unit) {
         patientRepository.getPatients { result ->
-            result.onSuccess {
-                patients = it
-                patientsError = null
-            }.onFailure {
-                patientsError = it.message ?: "Could not load patients"
-            }
+            result
+                .onSuccess {
+                    patients = it
+                    patientsError = null
+                }
+                .onFailure {
+                    patientsError = it.message
+                        ?: "Could not load patients"
+                }
 
             patientsLoading = false
         }
 
         appointmentRepository.getAppointments { result ->
-            result.onSuccess {
-                appointments = it
-                appointmentsError = null
-            }.onFailure {
-                appointmentsError =
-                    it.message ?: "Could not load appointments"
-            }
+            result
+                .onSuccess {
+                    appointments = it
+                    appointmentsError = null
+                }
+                .onFailure {
+                    appointmentsError = it.message
+                        ?: "Could not load appointments"
+                }
 
             appointmentsLoading = false
         }
@@ -205,7 +212,7 @@ fun VetHomeScreen(
             .padding(16.dp)
     ) {
 
-        // APP HEADER
+        // HEADER
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -253,53 +260,62 @@ fun VetHomeScreen(
 
         Text(
             text = "Here's your clinic overview.",
-            color = ClinicalMuted,
-            style = MaterialTheme.typography.bodyMedium
+            color = ClinicalMuted
         )
 
         Spacer(Modifier.height(24.dp))
 
-        // DASHBOARD METRICS
+        // PATIENT AND APPOINTMENT STATISTICS
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             DashboardMetric(
-                value = if (patientsLoading) "—"
-                else patients.size.toString(),
+                value = if (patientsLoading) {
+                    "—"
+                } else {
+                    patients.size.toString()
+                },
                 label = "Patients",
                 icon = Icons.Filled.Person,
                 modifier = Modifier.weight(1f)
             )
 
             DashboardMetric(
-                value = if (appointmentsLoading) "—"
-                else todayCount.toString(),
+                value = if (appointmentsLoading) {
+                    "—"
+                } else {
+                    todayCount.toString()
+                },
                 label = "Today",
                 icon = Icons.Filled.DateRange,
                 modifier = Modifier.weight(1f)
             )
 
             DashboardMetric(
-                value = if (appointmentsLoading) "—"
-                else upcoming.size.toString(),
+                value = if (appointmentsLoading) {
+                    "—"
+                } else {
+                    upcoming.size.toString()
+                },
                 label = "Upcoming",
                 icon = Icons.Filled.CheckCircle,
                 modifier = Modifier.weight(1f)
             )
         }
 
-        if (patientsError != null) {
+        patientsError?.let {
             Spacer(Modifier.height(8.dp))
 
             Text(
-                text = patientsError ?: "",
+                text = it,
                 color = MaterialTheme.colorScheme.error
             )
         }
 
         Spacer(Modifier.height(32.dp))
 
+        // UPCOMING APPOINTMENTS
         Text(
             text = "Upcoming Appointments",
             style = MaterialTheme.typography.titleLarge,
@@ -311,7 +327,9 @@ fun VetHomeScreen(
 
         when {
             appointmentsLoading -> {
-                CircularProgressIndicator(color = ClinicalGreen)
+                CircularProgressIndicator(
+                    color = ClinicalGreen
+                )
             }
 
             appointmentsError != null -> {
@@ -367,6 +385,7 @@ fun VetHomeScreen(
 
         Spacer(Modifier.height(28.dp))
 
+        // QUICK ACTIONS
         Text(
             text = "Quick Actions",
             style = MaterialTheme.typography.titleLarge,
@@ -376,7 +395,6 @@ fun VetHomeScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        // Actions reuse existing navigation callbacks.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -402,35 +420,29 @@ fun VetHomeScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Opens veterinarian-wide appointments.
             DashboardAction(
                 title = "Appointments",
                 icon = Icons.Filled.DateRange,
-                onClick = onViewPatients,
+                onClick = onViewAppointments,
                 modifier = Modifier.weight(1f)
             )
 
+            // Opens veterinarian-wide billing directly.
             DashboardAction(
                 title = "Billing",
                 icon = Icons.Filled.List,
-                onClick = onViewPatients,
+                onClick = onViewBills,
                 modifier = Modifier.weight(1f)
             )
         }
-
-        Spacer(Modifier.height(8.dp))
-
-        Text(
-            text = "Select a patient to manage appointments or billing.",
-            color = ClinicalMuted,
-            style = MaterialTheme.typography.bodySmall
-        )
 
         Spacer(Modifier.height(24.dp))
     }
 }
 
 /**
- * A statistic card with a real vector icon.
+ * A small statistics card.
  */
 @Composable
 private fun DashboardMetric(
@@ -474,8 +486,8 @@ private fun DashboardMetric(
 }
 
 /**
- * Upcoming appointment card.
- * Opens the associated patient profile when selected.
+ * Dashboard appointment card.
+ * Opens the corresponding patient's profile.
  */
 @Composable
 private fun DashboardAppointmentCard(
@@ -487,7 +499,9 @@ private fun DashboardAppointmentCard(
         SimpleDateFormat(
             "dd MMM, hh:mm a",
             Locale.getDefault()
-        ).format(Date(appointment.scheduledAt))
+        ).format(
+            Date(appointment.scheduledAt)
+        )
     }
 
     Card(
@@ -503,7 +517,10 @@ private fun DashboardAppointmentCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        border = BorderStroke(1.dp, ClinicalBorder),
+        border = BorderStroke(
+            1.dp,
+            ClinicalBorder
+        ),
         shape = RoundedCornerShape(14.dp)
     ) {
         Row(
@@ -532,7 +549,8 @@ private fun DashboardAppointmentCard(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = patient?.petName ?: "Patient unavailable",
+                    text = patient?.petName
+                        ?: "Patient unavailable",
                     fontWeight = FontWeight.SemiBold,
                     color = ClinicalText
                 )
@@ -568,7 +586,7 @@ private fun DashboardAppointmentCard(
 }
 
 /**
- * Quick action with a Material vector icon.
+ * Reusable dashboard action card.
  */
 @Composable
 private fun DashboardAction(
@@ -583,13 +601,19 @@ private fun DashboardAction(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        border = BorderStroke(1.dp, ClinicalBorder),
+        border = BorderStroke(
+            1.dp,
+            ClinicalBorder
+        ),
         shape = RoundedCornerShape(14.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 20.dp, horizontal = 10.dp),
+                .padding(
+                    vertical = 20.dp,
+                    horizontal = 10.dp
+                ),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -610,15 +634,21 @@ private fun DashboardAction(
 }
 
 /**
- * Existing pet-owner dashboard.
- * Preserved without changing navigation or record access.
+ * Pet-owner dashboard.
+ *
+ * Preserves linked-pet loading, selection,
+ * and read-only patient profile access.
  */
 @Composable
 fun OwnerHomeScreen(
     onSignOut: () -> Unit
 ) {
-    val repository = remember { PatientRepository() }
-    val ownerId = FirebaseAuth.getInstance().currentUser?.uid
+    val repository = remember {
+        PatientRepository()
+    }
+
+    val ownerId =
+        FirebaseAuth.getInstance().currentUser?.uid
 
     var patients by remember(ownerId) {
         mutableStateOf<List<Patient>>(emptyList())
@@ -636,19 +666,19 @@ fun OwnerHomeScreen(
         mutableStateOf<String?>(null)
     }
 
-    // Load pets linked to the signed-in owner.
+    // Only retrieve pets linked to the signed-in owner.
     LaunchedEffect(ownerId) {
         isLoading = true
         errorMessage = null
 
         repository.getOwnerPatients { result ->
             result
-                .onSuccess { loadedPatients ->
-                    patients = loadedPatients
+                .onSuccess {
+                    patients = it
                     errorMessage = null
                 }
-                .onFailure { exception ->
-                    errorMessage = exception.localizedMessage
+                .onFailure {
+                    errorMessage = it.localizedMessage
                         ?: "Unable to load your pets"
                 }
 
@@ -656,8 +686,9 @@ fun OwnerHomeScreen(
         }
     }
 
-    // Android Back returns from pet profile to pet list.
-    BackHandler(enabled = selectedPatient != null) {
+    BackHandler(
+        enabled = selectedPatient != null
+    ) {
         selectedPatient = null
     }
 
@@ -675,21 +706,23 @@ fun OwnerHomeScreen(
                 .padding(24.dp)
         ) {
             Text(
-                "My Pets",
+                text = "My Pets",
                 style = MaterialTheme.typography.headlineMedium
             )
 
             Spacer(Modifier.height(8.dp))
 
             Text(
-                "View your registered pets",
+                text = "View your registered pets",
                 style = MaterialTheme.typography.bodyMedium
             )
 
             Spacer(Modifier.height(24.dp))
 
             when {
-                isLoading -> CircularProgressIndicator()
+                isLoading -> {
+                    CircularProgressIndicator()
+                }
 
                 errorMessage != null -> {
                     Text(
@@ -738,7 +771,7 @@ fun OwnerHomeScreen(
 }
 
 /**
- * Clickable pet card for owners with one or more pets.
+ * Pet-owner card.
  */
 @Composable
 private fun OwnerPetCard(
@@ -759,14 +792,20 @@ private fun OwnerPetCard(
                 style = MaterialTheme.typography.titleLarge
             )
 
-            Text("Species: ${patient.species}")
+            Text(
+                text = "Species: ${patient.species}"
+            )
 
             if (patient.breed.isNotBlank()) {
-                Text("Breed: ${patient.breed}")
+                Text(
+                    text = "Breed: ${patient.breed}"
+                )
             }
 
             if (patient.age.isNotBlank()) {
-                Text("Age: ${patient.age}")
+                Text(
+                    text = "Age: ${patient.age}"
+                )
             }
 
             Text(
