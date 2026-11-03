@@ -1,4 +1,3 @@
-
 package com.example.vetman01.ui.patients
 
 import androidx.compose.foundation.clickable
@@ -20,13 +19,16 @@ import com.example.vetman01.model.Patient
 fun PatientListScreen(
     onAddPatient: () -> Unit,
     onPatientClick: (Patient) -> Unit,
+    onSignOut: () -> Unit,
     repository: PatientRepository = remember { PatientRepository() }
 ) {
-    var patients by remember { mutableStateOf<List<Patient>>(emptyList()) }
+    var patients by remember {
+        mutableStateOf<List<Patient>>(emptyList())
+    }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    // Retrieve patient records when the screen first appears.
+    // Load patients when the screen first appears.
     LaunchedEffect(Unit) {
         repository.getPatients { result ->
             loading = false
@@ -44,7 +46,6 @@ fun PatientListScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-
         Text(
             text = "My Patients",
             style = MaterialTheme.typography.headlineMedium
@@ -57,6 +58,16 @@ fun PatientListScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Add Patient")
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Use MainActivity's existing sign-out callback.
+        OutlinedButton(
+            onClick = onSignOut,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Sign Out")
         }
 
         Spacer(Modifier.height(16.dp))
@@ -76,8 +87,7 @@ fun PatientListScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(patients, key = { it.id }) { patient ->
-
-                    // Each patient appears as a selectable card.
+                    // Select a patient to open their profile.
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()

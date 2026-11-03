@@ -38,5 +38,9 @@ data class Bill(
 
     // Creation and last-updated timestamps.
     val createdAt: Long = 0L,
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+
+    // Identifies the payment associated with the latest balance update.
+    // Existing bills without this field remain compatible.
+    val lastPaymentId: String = ""
 )

@@ -17,10 +17,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Displays a patient's information and medical history.
- *
- * Provides access to patient editing, medical records,
- * appointment scheduling and billing.
+ * Veterinarian patient profile.
+ * Displays patient details, medical history, appointments and billing.
  */
 @Composable
 fun PatientProfileScreen(
@@ -36,28 +34,22 @@ fun PatientProfileScreen(
         MedicalRecordRepository()
     }
 ) {
-    // Store medical records retrieved from Firestore.
     var medicalRecords by remember(patient.id) {
         mutableStateOf<List<MedicalRecord>>(emptyList())
     }
-
     var loading by remember(patient.id) {
         mutableStateOf(true)
     }
-
     var error by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
 
-    // Retrieve the selected patient's medical history.
+    // Load the patient's medical history from Firestore.
     LaunchedEffect(patient.id) {
         repository.getMedicalRecords(patient.id) { result ->
             loading = false
-
             result
-                .onSuccess {
-                    medicalRecords = it
-                }
+                .onSuccess { medicalRecords = it }
                 .onFailure {
                     error = it.message ?: "Could not load medical history"
                 }
@@ -70,8 +62,6 @@ fun PatientProfileScreen(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-
-        // Return to the patient list.
         TextButton(onClick = onBack) {
             Text("< Back to patients")
         }
@@ -79,13 +69,13 @@ fun PatientProfileScreen(
         Spacer(Modifier.height(16.dp))
 
         Text(
-            text = patient.petName,
+            patient.petName,
             style = MaterialTheme.typography.headlineMedium
         )
 
         Spacer(Modifier.height(16.dp))
 
-        // Pet photo functionality will be added during GUI improvements.
+        // Placeholder until pet photo support is implemented.
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -110,7 +100,6 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // PATIENT INFORMATION
         Text(
             "Patient Information",
             style = MaterialTheme.typography.titleLarge
@@ -126,7 +115,6 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // OWNER INFORMATION
         Text(
             "Owner Information",
             style = MaterialTheme.typography.titleLarge
@@ -139,7 +127,6 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // PATIENT NOTES
         Text(
             "Patient Notes",
             style = MaterialTheme.typography.titleLarge
@@ -147,15 +134,12 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(8.dp))
 
-        Text(
-            patient.notes.ifBlank { "No notes recorded." }
-        )
+        Text(patient.notes.ifBlank { "No notes recorded." })
 
         Spacer(Modifier.height(24.dp))
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
-        // APPOINTMENTS
         Text(
             "Appointments",
             style = MaterialTheme.typography.titleLarge
@@ -183,7 +167,6 @@ fun PatientProfileScreen(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
-        // BILLING AND PAYMENTS
         Text(
             "Billing",
             style = MaterialTheme.typography.titleLarge
@@ -191,7 +174,6 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        // Opens the form for creating a new veterinary bill.
         Button(
             onClick = onCreateBill,
             modifier = Modifier.fillMaxWidth()
@@ -201,7 +183,6 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(8.dp))
 
-        // Opens existing bills and payment history.
         OutlinedButton(
             onClick = onViewBills,
             modifier = Modifier.fillMaxWidth()
@@ -213,7 +194,6 @@ fun PatientProfileScreen(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
-        // MEDICAL HISTORY
         Text(
             "Medical History",
             style = MaterialTheme.typography.titleLarge
@@ -230,22 +210,16 @@ fun PatientProfileScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Display loading, error, or saved consultation records.
         when {
-            loading -> {
-                CircularProgressIndicator()
-            }
+            loading -> CircularProgressIndicator()
 
-            error != null -> {
-                Text(
-                    text = error ?: "",
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
+            error != null -> Text(
+                text = error ?: "",
+                color = MaterialTheme.colorScheme.error
+            )
 
-            medicalRecords.isEmpty() -> {
+            medicalRecords.isEmpty() ->
                 Text("No medical records added yet.")
-            }
 
             else -> {
                 medicalRecords.forEach { record ->
@@ -259,14 +233,9 @@ fun PatientProfileScreen(
     }
 }
 
-/**
- * Displays a patient information field and its value.
- */
+/** Display a patient field and its value. */
 @Composable
-private fun PatientDetail(
-    label: String,
-    value: String
-) {
+private fun PatientDetail(label: String, value: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -287,13 +256,9 @@ private fun PatientDetail(
     }
 }
 
-/**
- * Displays one medical consultation from the patient's history.
- */
+/** Read-only display of a medical consultation. */
 @Composable
 private fun MedicalRecordCard(record: MedicalRecord) {
-
-    // Convert the visit timestamp into a readable date.
     val date = remember(record.visitDate) {
         SimpleDateFormat(
             "dd MMM yyyy, HH:mm",
@@ -301,14 +266,10 @@ private fun MedicalRecordCard(record: MedicalRecord) {
         ).format(Date(record.visitDate))
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = date,
+                date,
                 style = MaterialTheme.typography.titleMedium
             )
 
@@ -324,20 +285,14 @@ private fun MedicalRecordCard(record: MedicalRecord) {
     }
 }
 
-/**
- * Displays clinical information only when a value exists.
- */
+/** Hide empty medical fields. */
 @Composable
-private fun MedicalDetail(
-    label: String,
-    value: String
-) {
+private fun MedicalDetail(label: String, value: String) {
     if (value.isNotBlank()) {
         Text(
-            text = "$label: $value",
+            "$label: $value",
             style = MaterialTheme.typography.bodyMedium
         )
-
         Spacer(Modifier.height(6.dp))
     }
 }

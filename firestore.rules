@@ -1,0 +1,253 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // AUTHENTICATION AND ROLES
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isVet() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "veterinarian"
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.vetApproved == true;
+    }
+
+    function isPetOwner() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "pet_owner";
+    }
+
+    function vetOwnsPet(patientId) {
+      return isVet()
+        && exists(/databases/$(database)/documents/pets/$(patientId))
+        && get(/databases/$(database)/documents/pets/$(patientId)).data.vetId == request.auth.uid;
+    }
+
+    function ownerOwnsPet(patientId) {
+      return isPetOwner()
+        && exists(/databases/$(database)/documents/pets/$(patientId))
+        && get(/databases/$(database)/documents/pets/$(patientId)).data.get("ownerId", "") == request.auth.uid;
+    }
+
+    // PAYMENT INTEGRITY HELPERS
+
+    // Validate that a bill update includes a newly created
+    // payment that exactly identifies this balance change.
+    function validBillPaymentUpdate(billId) {
+      let paymentId = request.resource.data.lastPaymentId;
+
+      let paymentPath =
+        /databases/$(database)/documents/bills/$(billId)/payments/$(paymentId);
+
+      return paymentId is string
+        && paymentId.size() > 0
+        && paymentId != resource.data.get("lastPaymentId", "")
+        && !exists(paymentPath)
+        && existsAfter(paymentPath)
+        && getAfter(paymentPath).data.id == paymentId
+        && getAfter(paymentPath).data.billId == billId
+        && getAfter(paymentPath).data.vetId == request.auth.uid
+        && getAfter(paymentPath).data.method == request.resource.data.paymentMethod
+        && getAfter(paymentPath).data.createdAt == request.resource.data.updatedAt
+        && getAfter(paymentPath).data.amount > 0
+
+        // The payment must match the balance increase.
+        // Small tolerance accommodates Double arithmetic.
+        && request.resource.data.amountPaid - resource.data.amountPaid
+          > getAfter(paymentPath).data.amount - 0.000001
+        && request.resource.data.amountPaid - resource.data.amountPaid
+          < getAfter(paymentPath).data.amount + 0.000001;
+    }
+
+    // Validate payment creation against the before-and-after
+    // versions of the parent bill in the same transaction.
+    function validPaymentCreation(billId, paymentId) {
+      let billPath =
+        /databases/$(database)/documents/bills/$(billId);
+
+      let before = get(billPath).data;
+      let after = getAfter(billPath).data;
+
+      return before.vetId == request.auth.uid
+        && after.vetId == before.vetId
+        && after.patientId == before.patientId
+        && after.lastPaymentId == paymentId
+        && before.get("lastPaymentId", "") != paymentId
+        && after.amountPaid > before.amountPaid
+        && after.amountPaid <= after.amount
+        && after.paymentMethod == request.resource.data.method
+        && after.updatedAt == request.resource.data.createdAt
+        && after.amountPaid - before.amountPaid
+          > request.resource.data.amount - 0.000001
+        && after.amountPaid - before.amountPaid
+          < request.resource.data.amount + 0.000001;
+    }
+
+    // USER ACCOUNTS
+
+    match /users/{userId} {
+
+      allow get: if signedIn()
+        && request.auth.uid == userId;
+
+      allow list: if false;
+
+      // A user cannot grant themselves vetApproved.
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.email is string
+        && request.resource.data.role in [
+          "veterinarian", "pet_owner"
+        ]
+        && request.resource.data.keys().hasOnly([
+          "uid", "email", "role"
+        ]);
+
+      allow update, delete: if false;
+    }
+
+    // PATIENTS
+
+    match /pets/{patientId} {
+
+      allow read: if (
+        isVet() && resource.data.vetId == request.auth.uid
+      ) || (
+        isPetOwner()
+        && resource.data.get("ownerId", "") == request.auth.uid
+      );
+
+      allow create: if isVet()
+        && request.resource.data.id == patientId
+        && request.resource.data.vetId == request.auth.uid
+        && request.resource.data.ownerId == "";
+
+      // Owner linking remains disabled pending secure implementation.
+      allow update: if isVet()
+        && resource.data.vetId == request.auth.uid
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            "petName", "species", "breed", "age",
+            "sex", "ownerName", "ownerPhone", "notes"
+          ]);
+
+      allow delete: if false;
+
+      // MEDICAL RECORDS
+
+      match /medicalRecords/{recordId} {
+
+        allow read: if vetOwnsPet(patientId)
+          || ownerOwnsPet(patientId);
+
+        allow create: if vetOwnsPet(patientId)
+          && request.resource.data.patientId == patientId
+          && request.resource.data.vetId == request.auth.uid
+          && request.resource.data.id == recordId;
+
+        allow update, delete: if false;
+      }
+    }
+
+    // APPOINTMENTS
+
+    match /appointments/{appointmentId} {
+
+      allow read: if (
+        isVet() && resource.data.vetId == request.auth.uid
+      ) || ownerOwnsPet(resource.data.patientId);
+
+      allow create: if isVet()
+        && request.resource.data.id == appointmentId
+        && request.resource.data.vetId == request.auth.uid
+        && vetOwnsPet(request.resource.data.patientId);
+
+      allow update: if isVet()
+        && resource.data.vetId == request.auth.uid
+        && vetOwnsPet(resource.data.patientId)
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            "scheduledAt", "status", "reason", "notes"
+          ])
+        && request.resource.data.status in [
+          "scheduled", "completed", "cancelled"
+        ];
+
+      allow delete: if false;
+    }
+
+    // BILLS
+
+    match /bills/{billId} {
+
+      allow read: if (
+        isVet() && resource.data.vetId == request.auth.uid
+      ) || ownerOwnsPet(resource.data.patientId);
+
+      allow create: if isVet()
+        && request.resource.data.id == billId
+        && request.resource.data.vetId == request.auth.uid
+        && vetOwnsPet(request.resource.data.patientId)
+        && request.resource.data.amount > 0
+        && request.resource.data.amountPaid == 0
+        && request.resource.data.status == "unpaid"
+        && request.resource.data.lastPaymentId == "";
+
+      // Only allow balance changes backed by a payment
+      // created in the same atomic transaction.
+      allow update: if isVet()
+        && resource.data.vetId == request.auth.uid
+        && vetOwnsPet(resource.data.patientId)
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            "amountPaid", "status",
+            "paymentMethod", "updatedAt", "lastPaymentId"
+          ])
+        && request.resource.data.amountPaid > resource.data.amountPaid
+        && request.resource.data.amountPaid <= resource.data.amount
+        && (
+          (request.resource.data.amountPaid == request.resource.data.amount
+            && request.resource.data.status == "paid")
+          ||
+          (request.resource.data.amountPaid < request.resource.data.amount
+            && request.resource.data.status == "partial")
+        )
+        && validBillPaymentUpdate(billId);
+
+      allow delete: if false;
+
+      // PAYMENT HISTORY
+
+      match /payments/{paymentId} {
+
+        allow read: if (
+          isVet()
+          && get(/databases/$(database)/documents/bills/$(billId)).data.vetId == request.auth.uid
+        ) || ownerOwnsPet(
+          get(/databases/$(database)/documents/bills/$(billId)).data.patientId
+        );
+
+        allow create: if isVet()
+          && request.resource.data.id == paymentId
+          && request.resource.data.billId == billId
+          && request.resource.data.vetId == request.auth.uid
+          && request.resource.data.amount > 0
+          && request.resource.data.method in [
+            "M-Pesa", "Cash", "Airtel Money"
+          ]
+          && validPaymentCreation(billId, paymentId);
+
+        allow update, delete: if false;
+      }
+    }
+
+    // Unspecified paths are denied by default.
+  }
+}
