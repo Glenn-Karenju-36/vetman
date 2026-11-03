@@ -1,3 +1,4 @@
+
 package com.example.vetman01.ui.patients
 
 import androidx.compose.foundation.clickable
@@ -20,11 +21,13 @@ fun PatientListScreen(
     onAddPatient: () -> Unit,
     onPatientClick: (Patient) -> Unit,
     onSignOut: () -> Unit,
+    onBack: () -> Unit,
     repository: PatientRepository = remember { PatientRepository() }
 ) {
     var patients by remember {
         mutableStateOf<List<Patient>>(emptyList())
     }
+
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -46,6 +49,13 @@ fun PatientListScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Return to the veterinarian dashboard.
+        TextButton(onClick = onBack) {
+            Text("← Back to Dashboard")
+        }
+
+        Spacer(Modifier.height(12.dp))
+
         Text(
             text = "My Patients",
             style = MaterialTheme.typography.headlineMedium
@@ -81,7 +91,9 @@ fun PatientListScreen(
                 color = MaterialTheme.colorScheme.error
             )
 
-            patients.isEmpty() -> Text("No patients registered yet.")
+            patients.isEmpty() -> Text(
+                "No patients registered yet."
+            )
 
             else -> LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -91,13 +103,18 @@ fun PatientListScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onPatientClick(patient) }
+                            .clickable {
+                                onPatientClick(patient)
+                            }
                     ) {
-                        Column(Modifier.padding(16.dp)) {
+                        Column(
+                            modifier = Modifier.padding(16.dp)
+                        ) {
                             Text(
-                                patient.petName,
+                                text = patient.petName,
                                 style = MaterialTheme.typography.titleMedium
                             )
+
                             Text("Species: ${patient.species}")
                             Text("Owner: ${patient.ownerName}")
                         }
