@@ -4,62 +4,42 @@ package com.example.vetman01.ui.home
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+import com.example.vetman01.data.OwnerLinkApprovalRepository
+import com.example.vetman01.data.OwnerLinkRequest
 import com.example.vetman01.data.PatientRepository
 import com.example.vetman01.model.Patient
 import com.example.vetman01.ui.patients.OwnerPatientProfileScreen
+import com.google.firebase.auth.FirebaseAuth
 
 /**
- * Read-only dashboard for a signed-in pet owner.
+ * Pet-owner dashboard.
  *
- * Uses the existing PatientRepository so the owner
- * sees only pets linked to their Firebase account.
+ * Displays:
+ * - Pending invitations from veterinarians
+ * - Pets already linked to this account
+ * - Searchable patient cards
  *
- * No CRUD operations are exposed here.
+ * Owners cannot edit clinical records here.
  */
 @Composable
 fun OwnerDashboardScreen(
     onSignOut: () -> Unit,
-    repository: PatientRepository = remember {
+    patientRepository: PatientRepository = remember {
         PatientRepository()
+    },
+    linkRepository: OwnerLinkApprovalRepository = remember {
+        OwnerLinkApprovalRepository()
     }
 ) {
     val colors = MaterialTheme.colorScheme
@@ -68,42 +48,102 @@ fun OwnerDashboardScreen(
         mutableStateOf<List<Patient>>(emptyList())
     }
 
-    var loading by remember {
+    var requests by remember {
+        mutableStateOf<List<OwnerLinkRequest>>(emptyList())
+    }
+
+    var patientsLoading by remember {
         mutableStateOf(true)
     }
 
-    var error by remember {
+    var requestsLoading by remember {
+        mutableStateOf(false)
+    }
+
+    var patientsError by remember {
         mutableStateOf<String?>(null)
     }
 
-    var searchQuery by remember {
-        mutableStateOf("")
+    var requestsError by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var message by remember {
+        mutableStateOf<String?>(null)
     }
 
     var selectedPatient by remember {
         mutableStateOf<Patient?>(null)
     }
 
+    var selectedRequest by remember {
+        mutableStateOf<OwnerLinkRequest?>(null)
+    }
+
+    var pendingAction by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var search by remember {
+        mutableStateOf("")
+    }
+
     var refreshVersion by remember {
         mutableIntStateOf(0)
     }
 
-    // Only retrieve patients belonging to this owner.
+    var verified by remember {
+        mutableStateOf(
+            FirebaseAuth.getInstance()
+                .currentUser?.isEmailVerified == true
+        )
+    }
+
+    var verifying by remember {
+        mutableStateOf(false)
+    }
+
+    /**
+     * Reload linked patients after a request is accepted.
+     *
+     * The existing repository queries patients using the
+     * authenticated owner's UID.
+     */
     LaunchedEffect(refreshVersion) {
-        loading = true
-        error = null
+        patientsLoading = true
+        patientsError = null
 
-        repository.getOwnerPatients { result ->
+        patientRepository.getOwnerPatients { result ->
             result
-                .onSuccess { loadedPatients ->
-                    patients = loadedPatients
+                .onSuccess {
+                    patients = it
                 }
-                .onFailure { exception ->
-                    error = exception.message
-                        ?: "Unable to load your pets."
+                .onFailure {
+                    patientsError = it.message
+                        ?: "Could not load linked pets."
                 }
 
-            loading = false
+            patientsLoading = false
+        }
+
+        if (verified) {
+            requestsLoading = true
+            requestsError = null
+
+            linkRepository.getPendingRequests { result ->
+                result
+                    .onSuccess {
+                        requests = it
+                    }
+                    .onFailure {
+                        requestsError = it.message
+                            ?: "Could not load linking requests."
+                    }
+
+                requestsLoading = false
+            }
+        } else {
+            requests = emptyList()
         }
     }
 
@@ -111,7 +151,6 @@ fun OwnerDashboardScreen(
         selectedPatient = null
     }
 
-    // Preserve existing read-only profile navigation.
     val activePatient = selectedPatient
 
     if (activePatient != null) {
@@ -121,43 +160,118 @@ fun OwnerDashboardScreen(
                 selectedPatient = null
             }
         )
-    } else {
+        return
+    }
 
-        // Local filtering: no Firestore requests per keystroke.
-        val filteredPatients = remember(
-            patients,
-            searchQuery
-        ) {
-            val query = searchQuery.trim()
+    /**
+     * A final confirmation prevents accidental acceptance
+     * or rejection of an invitation.
+     */
+    selectedRequest?.let { request ->
+        AlertDialog(
+            onDismissRequest = {
+                if (pendingAction == null) {
+                    selectedRequest = null
+                }
+            },
+            title = {
+                Text("Confirm Pet Linking")
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "Pet: ${request.petName.ifBlank { "Unknown pet" }}"
+                    )
 
-            patients.filter { patient ->
-                query.isEmpty() ||
-                        patient.petName.contains(
-                            query,
-                            ignoreCase = true
-                        ) ||
-                        patient.species.contains(
-                            query,
-                            ignoreCase = true
-                        ) ||
-                        patient.breed.contains(
-                            query,
-                            ignoreCase = true
+                    Text(
+                        listOf(
+                            request.species,
+                            request.breed
+                        ).filter {
+                            it.isNotBlank()
+                        }.joinToString(" · ")
+                    )
+
+                    Text(
+                        "Accepting will allow this pet to appear " +
+                                "in your Vetman account."
+                    )
+
+                    if (pendingAction != null) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp)
                         )
-            }.sortedBy {
-                it.petName.lowercase()
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = pendingAction == null,
+                    onClick = {
+                        pendingAction = request.id
+
+                        // Update the pet and invitation atomically.
+                        linkRepository.acceptRequest(request) { result ->
+                            pendingAction = null
+                            selectedRequest = null
+
+                            result
+                                .onSuccess {
+                                    message = "Pet linked successfully."
+                                    refreshVersion++
+                                }
+                                .onFailure {
+                                    requestsError = it.message
+                                        ?: "Could not accept request."
+                                }
+                        }
+                    }
+                ) {
+                    Text("Accept & Link")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = pendingAction == null,
+                    onClick = {
+                        selectedRequest = null
+                    }
+                ) {
+                    Text("Cancel")
+                }
             }
+        )
+    }
+
+    val visiblePatients = remember(patients, search) {
+        patients.filter {
+            search.isBlank() ||
+                    it.petName.contains(
+                        search.trim(),
+                        ignoreCase = true
+                    ) ||
+                    it.species.contains(
+                        search.trim(),
+                        ignoreCase = true
+                    ) ||
+                    it.breed.contains(
+                        search.trim(),
+                        ignoreCase = true
+                    )
+        }.sortedBy {
+            it.petName.lowercase()
         }
+    }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp)
-        ) {
-
-            Spacer(Modifier.height(16.dp))
-
-            // DASHBOARD HEADER
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // HEADER
+        item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -167,16 +281,13 @@ fun OwnerDashboardScreen(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = "My Pets",
+                        "My Pets",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold
                     )
 
-                    Spacer(Modifier.height(4.dp))
-
                     Text(
-                        text = "Your veterinary dashboard",
-                        style = MaterialTheme.typography.bodyMedium,
+                        "Your veterinary dashboard",
                         color = colors.onSurfaceVariant
                     )
                 }
@@ -185,41 +296,30 @@ fun OwnerDashboardScreen(
                     Text("Sign Out")
                 }
             }
+        }
 
-            Spacer(Modifier.height(20.dp))
-
-            // DASHBOARD SUMMARY
+        // LINKED PETS SUMMARY
+        item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = colors.primaryContainer
-                )
+                ),
+                shape = RoundedCornerShape(16.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(20.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = colors.surface
-                    ) {
-                        Box(
-                            modifier = Modifier.size(52.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            // Placeholder until actual pet images exist.
-                            Text(
-                                text = "🐾",
-                                style = MaterialTheme.typography.headlineSmall
-                            )
-                        }
-                    }
+                    Text(
+                        "🐾",
+                        style = MaterialTheme.typography.headlineLarge
+                    )
 
                     Column {
                         Text(
-                            text = if (loading) {
+                            if (patientsLoading) {
                                 "—"
                             } else {
                                 patients.size.toString()
@@ -230,25 +330,251 @@ fun OwnerDashboardScreen(
                         )
 
                         Text(
-                            text = if (patients.size == 1) {
-                                "Linked Pet"
-                            } else {
-                                "Linked Pets"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
+                            "Linked Pets",
                             color = colors.onPrimaryContainer
                         )
                     }
                 }
             }
+        }
 
-            Spacer(Modifier.height(22.dp))
+        // EMAIL VERIFICATION
+        if (!verified) {
+            item {
+                ClinicalOwnerDashboardCard {
+                    Text(
+                        "Verify Your Email",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
 
-            // SEARCH
+                    Text(
+                        "Verify your registered email to receive " +
+                                "pet-linking requests from veterinarians.",
+                        color = colors.onSurfaceVariant
+                    )
+
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !verifying,
+                        onClick = {
+                            verifying = true
+
+                            linkRepository.sendVerificationEmail {
+                                    result ->
+                                verifying = false
+
+                                result
+                                    .onSuccess {
+                                        message = "Verification email sent."
+                                    }
+                                    .onFailure {
+                                        requestsError = it.message
+                                            ?: "Could not send verification email."
+                                    }
+                            }
+                        }
+                    ) {
+                        Text("Send Verification Email")
+                    }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !verifying,
+                        onClick = {
+                            verifying = true
+
+                            linkRepository.refreshVerification {
+                                    result ->
+                                verifying = false
+
+                                result
+                                    .onSuccess { isVerified ->
+                                        verified = isVerified
+
+                                        if (isVerified) {
+                                            message = "Email verified."
+                                            refreshVersion++
+                                        } else {
+                                            message = "Email is not verified yet."
+                                        }
+                                    }
+                                    .onFailure {
+                                        requestsError = it.message
+                                            ?: "Could not refresh verification."
+                                    }
+                            }
+                        }
+                    ) {
+                        Text(
+                            if (verifying) {
+                                "Checking..."
+                            } else {
+                                "I've Verified My Email"
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // LINKING REQUESTS
+        if (verified) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Pending Linking Requests",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.primary
+                    )
+
+                    TextButton(
+                        onClick = {
+                            refreshVersion++
+                        }
+                    ) {
+                        Text("Refresh")
+                    }
+                }
+            }
+
+            if (requestsLoading) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+            } else if (requests.isEmpty() &&
+                requestsError == null
+            ) {
+                item {
+                    OwnerDashboardNotice(
+                        "No pending linking requests."
+                    )
+                }
+            }
+
+            items(
+                items = requests,
+                key = { "request_${it.id}" }
+            ) { request ->
+                ClinicalOwnerDashboardCard {
+                    Text(
+                        request.petName.ifBlank {
+                            "Pet awaiting approval"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Text(
+                        listOf(
+                            request.species,
+                            request.breed
+                        ).filter {
+                            it.isNotBlank()
+                        }.joinToString(" · "),
+                        color = colors.onSurfaceVariant
+                    )
+
+                    Text(
+                        "A veterinarian has requested to " +
+                                "link this pet to your account.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            enabled = pendingAction == null,
+                            onClick = {
+                                pendingAction = request.id
+
+                                linkRepository.declineRequest(request) {
+                                        result ->
+                                    pendingAction = null
+
+                                    result
+                                        .onSuccess {
+                                            message = "Request declined."
+                                            refreshVersion++
+                                        }
+                                        .onFailure {
+                                            requestsError = it.message
+                                                ?: "Could not decline request."
+                                        }
+                                }
+                            }
+                        ) {
+                            Text("Decline")
+                        }
+
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            enabled = pendingAction == null,
+                            onClick = {
+                                selectedRequest = request
+                            }
+                        ) {
+                            Text("Accept")
+                        }
+                    }
+                }
+            }
+        }
+
+        // FEEDBACK
+        message?.let { value ->
+            item {
+                OwnerDashboardNotice(value)
+            }
+        }
+
+        requestsError?.let { value ->
+            item {
+                Text(
+                    value,
+                    color = colors.error
+                )
+            }
+        }
+
+        patientsError?.let { value ->
+            item {
+                Text(
+                    value,
+                    color = colors.error
+                )
+            }
+        }
+
+        // LINKED PETS SEARCH
+        item {
+            Text(
+                "Your Patients",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.primary
+            )
+        }
+
+        item {
             OutlinedTextField(
-                value = searchQuery,
+                value = search,
                 onValueChange = {
-                    searchQuery = it
+                    search = it
                 },
                 label = {
                     Text("Search Pets")
@@ -256,136 +582,101 @@ fun OwnerDashboardScreen(
                 placeholder = {
                     Text("Name, species or breed")
                 },
-                leadingIcon = {
-                    Text(
-                        text = "⌕",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = colors.onSurfaceVariant
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(
-                            onClick = {
-                                searchQuery = ""
-                            }
-                        ) {
-                            Text(
-                                text = "×",
-                                style = MaterialTheme.typography.titleLarge
-                            )
-                        }
-                    }
-                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
             )
+        }
 
-            Spacer(Modifier.height(20.dp))
-
-            // PET LIST HEADING
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Your Patients",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = colors.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                if (!loading && error == null) {
-                    Text(
-                        text = "${filteredPatients.size} shown",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = colors.onSurfaceVariant
-                    )
+        if (patientsLoading) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-
-            // LOADING, ERROR, EMPTY AND CONTENT STATES
-            when {
-                loading -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator()
+        } else if (visiblePatients.isEmpty()) {
+            item {
+                OwnerDashboardNotice(
+                    if (patients.isEmpty()) {
+                        "No linked pets yet."
+                    } else {
+                        "No matching pets found."
                     }
-                }
-
-                error != null -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                )
+            }
+        } else {
+            items(
+                items = visiblePatients,
+                key = { "pet_${it.id}" }
+            ) { patient ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            selectedPatient = patient
+                        },
+                    colors = CardDefaults.cardColors(
+                        containerColor = colors.surface
+                    ),
+                    border = BorderStroke(
+                        1.dp,
+                        colors.outlineVariant
+                    ),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = error ?: "Unable to load pets.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.error
-                        )
-
-                        Spacer(Modifier.height(12.dp))
-
-                        OutlinedButton(
-                            onClick = {
-                                refreshVersion++
-                            }
+                        Surface(
+                            modifier = Modifier.size(60.dp),
+                            color = colors.primaryContainer,
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Try Again")
-                        }
-                    }
-                }
-
-                patients.isEmpty() -> {
-                    OwnerEmptyState(
-                        title = "No Linked Pets Yet",
-                        description = "Your veterinarian can link your pets to this account.",
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                filteredPatients.isEmpty() -> {
-                    OwnerEmptyState(
-                        title = "No Matching Pets",
-                        description = "Try a different name, species or breed.",
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                            bottom = 24.dp
-                        )
-                    ) {
-                        items(
-                            items = filteredPatients,
-                            key = { patient ->
-                                patient.id
+                            Box(
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "🐾",
+                                    style = MaterialTheme.typography.headlineSmall
+                                )
                             }
-                        ) { patient ->
-                            OwnerPetCard(
-                                patient = patient,
-                                onClick = {
-                                    selectedPatient = patient
-                                }
+                        }
+
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                patient.petName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            Text(
+                                patient.species,
+                                color = colors.onSurfaceVariant
+                            )
+
+                            Text(
+                                patient.breed.ifBlank {
+                                    "Breed not specified"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
                             )
                         }
+
+                        Text(
+                            "›",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = colors.primary
+                        )
                     }
                 }
             }
@@ -394,131 +685,54 @@ fun OwnerDashboardScreen(
 }
 
 /**
- * Read-only pet card.
+ * Reusable Minimal Clinical card.
  *
- * Uses the patient ID for list identity because
- * multiple animals may share a name.
+ * The same surface, border and shape are applied
+ * to verification and invitation sections.
  */
 @Composable
-private fun OwnerPetCard(
-    patient: Patient,
-    onClick: () -> Unit
+private fun ClinicalOwnerDashboardCard(
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
+        ),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content
+        )
+    }
+}
+
+/**
+ * Non-interactive status/empty-state card.
+ */
+@Composable
+private fun OwnerDashboardNotice(
+    message: String
 ) {
     val colors = MaterialTheme.colorScheme
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(
-            1.dp,
-            colors.outlineVariant
-        ),
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = colors.surface
+            containerColor = colors.primaryContainer
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(
+            text = message,
+            modifier = Modifier.padding(16.dp),
+            color = colors.onPrimaryContainer
         )
-    ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-
-            // PET PHOTO PLACEHOLDER
-            Surface(
-                modifier = Modifier.size(64.dp),
-                shape = RoundedCornerShape(12.dp),
-                color = colors.primaryContainer
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "🐾",
-                        style = MaterialTheme.typography.headlineMedium
-                    )
-                }
-            }
-
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(
-                    text = patient.petName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                Spacer(Modifier.height(5.dp))
-
-                Text(
-                    text = patient.species.ifBlank {
-                        "Species not specified"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.onSurfaceVariant
-                )
-
-                Spacer(Modifier.height(3.dp))
-
-                Text(
-                    text = patient.breed.ifBlank {
-                        "Breed not specified"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurfaceVariant
-                )
-            }
-
-            Text(
-                text = "›",
-                style = MaterialTheme.typography.headlineMedium,
-                color = colors.primary
-            )
-        }
-    }
-}
-
-/**
- * Shared empty-state presentation.
- */
-@Composable
-private fun OwnerEmptyState(
-    title: String,
-    description: String,
-    modifier: Modifier = Modifier
-) {
-    val colors = MaterialTheme.colorScheme
-
-    Box(
-        modifier = modifier.fillMaxWidth(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier.padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "🐾",
-                style = MaterialTheme.typography.headlineLarge
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onSurfaceVariant
-            )
-        }
     }
 }
