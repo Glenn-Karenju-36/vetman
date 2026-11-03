@@ -375,6 +375,7 @@ class MainActivity : ComponentActivity() {
                                     // Display registered patients.
                                     else -> {
                                         key(patientListVersion) {
+
                                             PatientListScreen(
                                                 onAddPatient = {
                                                     showAddPatient = true
@@ -382,7 +383,10 @@ class MainActivity : ComponentActivity() {
 
                                                 onPatientClick = { patient ->
                                                     selectedPatient = patient
-                                                }
+                                                },
+
+                                                // Connect the new button to the existing sign-out logic.
+                                                onSignOut = signOut
                                             )
                                         }
                                     }

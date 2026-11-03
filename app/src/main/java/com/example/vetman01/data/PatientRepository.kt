@@ -6,10 +6,8 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 
 /**
- * PatientRepository
- *
- * Handles saving, retrieving and updating patient records.
- * Screens communicate with Firestore through this repository.
+ * Handles patient records for veterinarians and pet owners.
+ * All Firestore patient operations belong in this repository.
  */
 class PatientRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
@@ -17,16 +15,13 @@ class PatientRepository(
 ) {
 
     /**
-     * ADD PATIENT
-     *
-     * Creates a new patient document in Firestore.
-     * Associates the patient with the logged-in veterinarian.
+     * Create a patient owned by the signed-in veterinarian.
+     * A new patient initially has no linked owner account.
      */
     fun addPatient(
         patient: Patient,
         onResult: (Result<Unit>) -> Unit
     ) {
-        // Identify the veterinarian registering the patient.
         val vetId = auth.currentUser?.uid
 
         if (vetId == null) {
@@ -34,17 +29,15 @@ class PatientRepository(
             return
         }
 
-        // Generate a unique document ID for the new patient.
         val doc = db.collection("pets").document()
 
-        // Attach the patient ID, veterinarian ID and creation time.
         val toSave = patient.copy(
             id = doc.id,
             vetId = vetId,
+            ownerId = "",
             createdAt = System.currentTimeMillis()
         )
 
-        // Save the patient and report the result.
         doc.set(toSave)
             .addOnSuccessListener {
                 onResult(Result.success(Unit))
@@ -55,30 +48,24 @@ class PatientRepository(
     }
 
     /**
-     * GET PATIENTS
-     *
-     * Retrieves patients registered by the logged-in veterinarian.
+     * Retrieve patients registered by the signed-in veterinarian.
      */
     fun getPatients(
         onResult: (Result<List<Patient>>) -> Unit
     ) {
         val vetId = auth.currentUser?.uid
 
-        // Prevent retrieval without an authenticated user.
         if (vetId == null) {
             onResult(Result.failure(Exception("Not signed in")))
             return
         }
 
-        // Retrieve only patients associated with this veterinarian.
         db.collection("pets")
             .whereEqualTo("vetId", vetId)
             .get()
             .addOnSuccessListener { snapshot ->
-
-                // Convert Firestore documents into Patient objects.
-                val patients = snapshot.documents.mapNotNull { document ->
-                    document.toObject(Patient::class.java)
+                val patients = snapshot.documents.mapNotNull {
+                    it.toObject(Patient::class.java)
                 }
 
                 onResult(Result.success(patients))
@@ -89,16 +76,46 @@ class PatientRepository(
     }
 
     /**
-     * UPDATE PATIENT
+     * OWNER PATIENTS
      *
-     * Modifies an existing patient's information in Firestore.
-     * Preserves the original ID, veterinarian ID and creation date.
+     * Retrieve only pets linked to the signed-in pet owner.
+     *
+     * Firestore security rules independently verify that
+     * the requesting user is authorized to read these records.
+     */
+    fun getOwnerPatients(
+        onResult: (Result<List<Patient>>) -> Unit
+    ) {
+        val ownerId = auth.currentUser?.uid
+
+        if (ownerId == null) {
+            onResult(Result.failure(Exception("Not signed in")))
+            return
+        }
+
+        db.collection("pets")
+            .whereEqualTo("ownerId", ownerId)
+            .get()
+            .addOnSuccessListener { snapshot ->
+                val patients = snapshot.documents.mapNotNull {
+                    it.toObject(Patient::class.java)
+                }
+
+                onResult(Result.success(patients))
+            }
+            .addOnFailureListener { exception ->
+                onResult(Result.failure(exception))
+            }
+    }
+
+    /**
+     * Update editable patient fields without changing
+     * ownership, identity or creation information.
      */
     fun updatePatient(
         patient: Patient,
         onResult: (Result<Unit>) -> Unit
     ) {
-        // Ensure a veterinarian is logged in.
         val vetId = auth.currentUser?.uid
 
         if (vetId == null) {
@@ -106,7 +123,6 @@ class PatientRepository(
             return
         }
 
-        // An existing patient must have a Firestore document ID.
         if (patient.id.isBlank()) {
             onResult(
                 Result.failure(Exception("Patient ID is missing"))
@@ -114,7 +130,6 @@ class PatientRepository(
             return
         }
 
-        // Prevent updating a patient registered by another vet.
         if (patient.vetId != vetId) {
             onResult(
                 Result.failure(Exception("You cannot edit this patient"))
@@ -122,8 +137,6 @@ class PatientRepository(
             return
         }
 
-        // Update only editable fields in the existing document.
-        // This preserves the original ID, vetId and createdAt.
         db.collection("pets")
             .document(patient.id)
             .update(
@@ -140,6 +153,84 @@ class PatientRepository(
             )
             .addOnSuccessListener {
                 onResult(Result.success(Unit))
+            }
+            .addOnFailureListener { exception ->
+                onResult(Result.failure(exception))
+            }
+    }
+
+    /**
+     * EXISTING OWNER LINKING METHOD
+     *
+     * Retained for future secure linking implementation.
+     * Current Firestore rules prevent this client-side method
+     * from reading another user's profile or changing ownerId.
+     */
+    fun linkPetOwner(
+        patientId: String,
+        ownerId: String,
+        onResult: (Result<Unit>) -> Unit
+    ) {
+        val vetId = auth.currentUser?.uid
+
+        if (vetId == null) {
+            onResult(Result.failure(Exception("Not signed in")))
+            return
+        }
+
+        if (patientId.isBlank() || ownerId.isBlank()) {
+            onResult(
+                Result.failure(Exception("Patient or owner ID is missing"))
+            )
+            return
+        }
+
+        val patientRef = db.collection("pets").document(patientId)
+
+        patientRef.get()
+            .addOnSuccessListener { document ->
+
+                if (!document.exists()) {
+                    onResult(
+                        Result.failure(Exception("Patient not found"))
+                    )
+                    return@addOnSuccessListener
+                }
+
+                if (document.getString("vetId") != vetId) {
+                    onResult(
+                        Result.failure(
+                            Exception("You cannot link this patient")
+                        )
+                    )
+                    return@addOnSuccessListener
+                }
+
+                db.collection("users").document(ownerId).get()
+                    .addOnSuccessListener { ownerDoc ->
+
+                        if (!ownerDoc.exists() ||
+                            ownerDoc.getString("role") != "pet_owner"
+                        ) {
+                            onResult(
+                                Result.failure(
+                                    Exception("Registered pet owner not found")
+                                )
+                            )
+                            return@addOnSuccessListener
+                        }
+
+                        patientRef.update("ownerId", ownerId)
+                            .addOnSuccessListener {
+                                onResult(Result.success(Unit))
+                            }
+                            .addOnFailureListener { exception ->
+                                onResult(Result.failure(exception))
+                            }
+                    }
+                    .addOnFailureListener { exception ->
+                        onResult(Result.failure(exception))
+                    }
             }
             .addOnFailureListener { exception ->
                 onResult(Result.failure(exception))
