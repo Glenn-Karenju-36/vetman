@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import com.example.vetman01.data.AuthRepository
 import com.example.vetman01.model.Patient
 import com.example.vetman01.ui.auth.AuthScreen
+import com.example.vetman01.ui.home.VetHomeScreen
 import com.example.vetman01.ui.home.OwnerHomeScreen
 import com.example.vetman01.ui.patients.AddAppointmentScreen
 import com.example.vetman01.ui.patients.AddBillScreen
@@ -46,7 +47,8 @@ import com.google.firebase.auth.FirebaseAuth
  * Main entry point for Vetman.
  *
  * Handles authentication, user roles, and navigation between
- * patient management, medical records, appointments and billing.
+ * the veterinarian dashboard, patients, medical records,
+ * appointments, billing and pet-owner screens.
  */
 class MainActivity : ComponentActivity() {
 
@@ -68,21 +70,54 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // User role and authentication errors.
-                var role by remember { mutableStateOf<String?>(null) }
-                var roleError by remember { mutableStateOf<String?>(null) }
+                var role by remember {
+                    mutableStateOf<String?>(null)
+                }
+
+                var roleError by remember {
+                    mutableStateOf<String?>(null)
+                }
+
+                /**
+                 * Dashboard navigation.
+                 *
+                 * Veterinarians now start on VetHomeScreen.
+                 * The patient list opens only when selected.
+                 */
+                var showPatientList by remember {
+                    mutableStateOf(false)
+                }
 
                 // Patient-related navigation.
-                var showAddPatient by remember { mutableStateOf(false) }
-                var showEditPatient by remember { mutableStateOf(false) }
-                var showAddMedicalRecord by remember { mutableStateOf(false) }
+                var showAddPatient by remember {
+                    mutableStateOf(false)
+                }
+
+                var showEditPatient by remember {
+                    mutableStateOf(false)
+                }
+
+                var showAddMedicalRecord by remember {
+                    mutableStateOf(false)
+                }
 
                 // Appointment-related navigation.
-                var showAddAppointment by remember { mutableStateOf(false) }
-                var showAppointments by remember { mutableStateOf(false) }
+                var showAddAppointment by remember {
+                    mutableStateOf(false)
+                }
+
+                var showAppointments by remember {
+                    mutableStateOf(false)
+                }
 
                 // Billing-related navigation.
-                var showAddBill by remember { mutableStateOf(false) }
-                var showBills by remember { mutableStateOf(false) }
+                var showAddBill by remember {
+                    mutableStateOf(false)
+                }
+
+                var showBills by remember {
+                    mutableStateOf(false)
+                }
 
                 // Currently selected patient.
                 var selectedPatient by remember {
@@ -90,32 +125,65 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Reload Firestore data after changes.
-                var patientListVersion by remember { mutableStateOf(0) }
-                var patientProfileVersion by remember { mutableStateOf(0) }
+                var patientListVersion by remember {
+                    mutableStateOf(0)
+                }
+
+                var patientProfileVersion by remember {
+                    mutableStateOf(0)
+                }
 
                 /**
                  * Handle Android's Back button.
-                 * Close the active form before returning to the patient list.
+                 *
+                 * Close forms first, then patient profiles,
+                 * then return from the patient list to dashboard.
                  */
                 BackHandler(
-                    enabled = showAddPatient ||
-                            showEditPatient ||
-                            showAddMedicalRecord ||
-                            showAddAppointment ||
-                            showAppointments ||
-                            showAddBill ||
-                            showBills ||
-                            selectedPatient != null
+                    enabled = role == "veterinarian" && (
+                            showAddPatient ||
+                                    showEditPatient ||
+                                    showAddMedicalRecord ||
+                                    showAddAppointment ||
+                                    showAppointments ||
+                                    showAddBill ||
+                                    showBills ||
+                                    selectedPatient != null ||
+                                    showPatientList
+                            )
                 ) {
                     when {
                         showAddBill -> showAddBill = false
+
                         showBills -> showBills = false
-                        showAddAppointment -> showAddAppointment = false
-                        showAppointments -> showAppointments = false
-                        showAddMedicalRecord -> showAddMedicalRecord = false
-                        showEditPatient -> showEditPatient = false
-                        showAddPatient -> showAddPatient = false
-                        selectedPatient != null -> selectedPatient = null
+
+                        showAddAppointment -> {
+                            showAddAppointment = false
+                        }
+
+                        showAppointments -> {
+                            showAppointments = false
+                        }
+
+                        showAddMedicalRecord -> {
+                            showAddMedicalRecord = false
+                        }
+
+                        showEditPatient -> {
+                            showEditPatient = false
+                        }
+
+                        showAddPatient -> {
+                            showAddPatient = false
+                        }
+
+                        selectedPatient != null -> {
+                            selectedPatient = null
+                        }
+
+                        showPatientList -> {
+                            showPatientList = false
+                        }
                     }
                 }
 
@@ -130,7 +198,9 @@ class MainActivity : ComponentActivity() {
 
                         repository.getUserRole { result ->
                             result
-                                .onSuccess { role = it }
+                                .onSuccess {
+                                    role = it
+                                }
                                 .onFailure {
                                     roleError = it.message
                                         ?: "Could not load your role"
@@ -139,18 +209,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Sign out and reset all navigation states.
+                /**
+                 * Sign out and reset all navigation states.
+                 */
                 val signOut = {
                     repository.signOut()
+
                     signedIn = false
                     role = null
                     roleError = null
 
+                    showPatientList = false
                     showAddPatient = false
                     showEditPatient = false
                     showAddMedicalRecord = false
+
                     showAddAppointment = false
                     showAppointments = false
+
                     showAddBill = false
                     showBills = false
 
@@ -175,6 +251,10 @@ class MainActivity : ComponentActivity() {
                             !signedIn -> {
                                 AuthScreen(
                                     onAuthSuccess = {
+                                        // New veterinarian sessions
+                                        // begin on the dashboard.
+                                        showPatientList = false
+                                        selectedPatient = null
                                         signedIn = true
                                     }
                                 )
@@ -209,6 +289,7 @@ class MainActivity : ComponentActivity() {
                                             onBack = {
                                                 showAddPatient = false
                                             },
+
                                             onSaved = {
                                                 showAddPatient = false
                                                 patientListVersion++
@@ -243,7 +324,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Display bills, balances and payment history.
+                                    // Display bills and payment history.
                                     showBills && selectedPatient != null -> {
                                         BillListScreen(
                                             patient = selectedPatient!!,
@@ -255,7 +336,9 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     // Schedule an appointment.
-                                    showAddAppointment && selectedPatient != null -> {
+                                    showAddAppointment &&
+                                            selectedPatient != null -> {
+
                                         AddAppointmentScreen(
                                             patient = selectedPatient!!,
 
@@ -276,7 +359,9 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     // View and manage appointments.
-                                    showAppointments && selectedPatient != null -> {
+                                    showAppointments &&
+                                            selectedPatient != null -> {
+
                                         AppointmentListScreen(
                                             patient = selectedPatient!!,
 
@@ -287,7 +372,9 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     // Add a medical consultation.
-                                    showAddMedicalRecord && selectedPatient != null -> {
+                                    showAddMedicalRecord &&
+                                            selectedPatient != null -> {
+
                                         AddMedicalRecordScreen(
                                             patient = selectedPatient!!,
 
@@ -308,8 +395,10 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Edit existing patient details.
-                                    showEditPatient && selectedPatient != null -> {
+                                    // Edit an existing patient.
+                                    showEditPatient &&
+                                            selectedPatient != null -> {
+
                                         EditPatientScreen(
                                             patient = selectedPatient!!,
 
@@ -333,7 +422,15 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
 
-                                    // Display selected patient profile.
+                                    /**
+                                     * Patient profile.
+                                     *
+                                     * If opened from the dashboard,
+                                     * Back returns to the dashboard.
+                                     *
+                                     * If opened from My Patients,
+                                     * Back returns to the patient list.
+                                     */
                                     selectedPatient != null -> {
                                         key(patientProfileVersion) {
                                             PatientProfileScreen(
@@ -359,12 +456,10 @@ class MainActivity : ComponentActivity() {
                                                     showAppointments = true
                                                 },
 
-                                                // Open bill creation.
                                                 onCreateBill = {
                                                     showAddBill = true
                                                 },
 
-                                                // Open billing and payment history.
                                                 onViewBills = {
                                                     showBills = true
                                                 }
@@ -372,10 +467,14 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    // Display registered patients.
-                                    else -> {
+                                    /**
+                                     * My Patients screen.
+                                     *
+                                     * Reuses the existing patient list,
+                                     * registration and profile navigation.
+                                     */
+                                    showPatientList -> {
                                         key(patientListVersion) {
-
                                             PatientListScreen(
                                                 onAddPatient = {
                                                     showAddPatient = true
@@ -385,15 +484,41 @@ class MainActivity : ComponentActivity() {
                                                     selectedPatient = patient
                                                 },
 
-                                                // Connect the new button to the existing sign-out logic.
-                                                onSignOut = signOut
+                                                onSignOut = signOut,
+
+                                                onBack = {
+                                                    showPatientList = false
+                                                }
                                             )
                                         }
+                                    }
+
+                                    /**
+                                     * Default veterinarian destination.
+                                     *
+                                     * The Minimal Clinical dashboard loads
+                                     * real data from PatientRepository and
+                                     * AppointmentRepository.
+                                     */
+                                    else -> {
+                                        VetHomeScreen(
+                                            onAddPatient = {
+                                                showAddPatient = true
+                                            },
+                                            onViewPatients = {
+                                                showPatientList = true
+                                            },
+                                            onPatientClick = { patient ->
+                                                showPatientList = false
+                                                selectedPatient = patient
+                                            },
+                                            onSignOut = signOut
+                                        )
                                     }
                                 }
                             }
 
-                            // Preserve the pet-owner home screen.
+                            // Preserve the existing pet-owner module.
                             role == "pet_owner" -> {
                                 OwnerHomeScreen(
                                     onSignOut = signOut
@@ -405,7 +530,7 @@ class MainActivity : ComponentActivity() {
                                 Text("Unknown role: $role")
                             }
 
-                            // Wait for Firestore to retrieve the user's role.
+                            // Wait for Firestore to retrieve the role.
                             else -> {
                                 Box(
                                     modifier = Modifier.fillMaxSize(),
