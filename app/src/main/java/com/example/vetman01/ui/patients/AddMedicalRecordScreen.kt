@@ -1,4 +1,3 @@
-
 package com.example.vetman01.ui.patients
 
 import android.graphics.BitmapFactory
@@ -21,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -29,20 +29,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.example.vetman01.data.MedicalRecordRepository
+import com.example.vetman01.data.MedicalRecordSaveStatus
 import com.example.vetman01.model.MedicalRecord
 import com.example.vetman01.model.Patient
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Medical record entry modes.
- * Both manual and OCR modes use the same MedicalRecord model.
- */
 private enum class RecordEntryMode {
     SELECT, MANUAL, SCAN
 }
 
+/**
+ * Medical record entry screen.
+ *
+ * Manual records support offline queuing.
+ * Image selection is preserved for future OCR work.
+ */
 @Composable
 fun AddMedicalRecordScreen(
     patient: Patient,
@@ -59,25 +62,54 @@ fun AddMedicalRecordScreen(
         mutableStateOf(RecordEntryMode.SELECT)
     }
 
-    // Manual medical record fields.
-    var symptoms by remember(patient.id) { mutableStateOf("") }
-    var diagnosis by remember(patient.id) { mutableStateOf("") }
-    var treatment by remember(patient.id) { mutableStateOf("") }
-    var medications by remember(patient.id) { mutableStateOf("") }
-    var procedures by remember(patient.id) { mutableStateOf("") }
-    var notes by remember(patient.id) { mutableStateOf("") }
+    var symptoms by remember(patient.id) {
+        mutableStateOf("")
+    }
+    var diagnosis by remember(patient.id) {
+        mutableStateOf("")
+    }
+    var treatment by remember(patient.id) {
+        mutableStateOf("")
+    }
+    var medications by remember(patient.id) {
+        mutableStateOf("")
+    }
+    var procedures by remember(patient.id) {
+        mutableStateOf("")
+    }
+    var notes by remember(patient.id) {
+        mutableStateOf("")
+    }
 
-    var saving by remember(patient.id) { mutableStateOf(false) }
+    var saving by remember(patient.id) {
+        mutableStateOf(false)
+    }
+    var submitted by remember(patient.id) {
+        mutableStateOf(false)
+    }
+    var queuedLocally by remember(patient.id) {
+        mutableStateOf(false)
+    }
     var error by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
 
-    // Selected image from the camera or photo picker.
+    var stopSaveObserver by remember(patient.id) {
+        mutableStateOf<(() -> Unit)?>(null)
+    }
+
+    DisposableEffect(patient.id) {
+        onDispose {
+            stopSaveObserver?.invoke()
+        }
+    }
+
+    // The camera/gallery image is currently a preview only.
+    // Images are not uploaded or stored in medical records yet.
     var selectedImageUri by remember(patient.id) {
         mutableStateOf<Uri?>(null)
     }
 
-    // Pending camera output. Kept until the camera returns.
     var pendingCameraUri by remember {
         mutableStateOf<Uri?>(null)
     }
@@ -86,7 +118,6 @@ fun AddMedicalRecordScreen(
         mutableStateOf<String?>(null)
     }
 
-    // Gallery selection.
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -96,7 +127,6 @@ fun AddMedicalRecordScreen(
         }
     }
 
-    // Full-resolution camera capture to a FileProvider URI.
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
@@ -106,14 +136,17 @@ fun AddMedicalRecordScreen(
         } else {
             scanError = "Photograph was not captured."
         }
-
         pendingCameraUri = null
     }
 
     val canSave = listOf(
-        symptoms, diagnosis, treatment,
-        medications, procedures, notes
-    ).any { it.isNotBlank() } && !saving
+        symptoms,
+        diagnosis,
+        treatment,
+        medications,
+        procedures,
+        notes
+    ).any { it.isNotBlank() } && !saving && !submitted
 
     Column(
         modifier = Modifier
@@ -130,20 +163,21 @@ fun AddMedicalRecordScreen(
                     error = null
                 }
             },
-            enabled = !saving
+            enabled = !saving && !submitted
         ) {
             Text(
-                if (entryMode == RecordEntryMode.SELECT)
+                if (entryMode == RecordEntryMode.SELECT) {
                     "← Back to Profile"
-                else
+                } else {
                     "← Entry Methods"
+                }
             )
         }
 
         Spacer(Modifier.height(12.dp))
 
         Text(
-            "New Medical Record",
+            text = "New Medical Record",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
@@ -151,7 +185,7 @@ fun AddMedicalRecordScreen(
         Spacer(Modifier.height(6.dp))
 
         Text(
-            "Patient: ${patient.petName}",
+            text = "Patient: ${patient.petName}",
             color = colors.onSurfaceVariant
         )
 
@@ -160,7 +194,7 @@ fun AddMedicalRecordScreen(
         when (entryMode) {
             RecordEntryMode.SELECT -> {
                 Text(
-                    "Choose Entry Method",
+                    text = "Choose Entry Method",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -168,7 +202,7 @@ fun AddMedicalRecordScreen(
                 Spacer(Modifier.height(8.dp))
 
                 Text(
-                    "How would you like to record this visit?",
+                    text = "How would you like to record this visit?",
                     color = colors.onSurfaceVariant
                 )
 
@@ -187,7 +221,8 @@ fun AddMedicalRecordScreen(
 
                 RecordEntryCard(
                     title = "Scan Document",
-                    description = "Capture or choose a photograph of an existing medical record.",
+                    description = "Capture or choose a photograph " +
+                            "of an existing medical record.",
                     icon = Icons.Filled.DateRange,
                     onClick = {
                         entryMode = RecordEntryMode.SCAN
@@ -197,7 +232,7 @@ fun AddMedicalRecordScreen(
 
             RecordEntryMode.SCAN -> {
                 Text(
-                    "Scan Medical Document",
+                    text = "Scan Medical Document",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -205,13 +240,13 @@ fun AddMedicalRecordScreen(
                 Spacer(Modifier.height(8.dp))
 
                 Text(
-                    "Capture a new photograph or select an existing one.",
+                    text = "Capture a new photograph or " +
+                            "select an existing one.",
                     color = colors.onSurfaceVariant
                 )
 
                 Spacer(Modifier.height(20.dp))
 
-                // Both image sources feed into the same preview.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -229,11 +264,12 @@ fun AddMedicalRecordScreen(
                                 )
                                 directory.mkdirs()
 
-                                val imageFile = File.createTempFile(
-                                    "vetman_scan_",
-                                    ".jpg",
-                                    directory
-                                )
+                                val imageFile =
+                                    File.createTempFile(
+                                        "vetman_scan_",
+                                        ".jpg",
+                                        directory
+                                    )
 
                                 val uri = FileProvider.getUriForFile(
                                     context,
@@ -267,14 +303,16 @@ fun AddMedicalRecordScreen(
 
                 ClinicalScanCard {
                     Text(
-                        "Document Preview",
+                        text = "Document Preview",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
 
                     Spacer(Modifier.height(14.dp))
 
-                    if (selectedImageUri == null) {
+                    val imageUri = selectedImageUri
+
+                    if (imageUri == null) {
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -298,37 +336,39 @@ fun AddMedicalRecordScreen(
                                 Spacer(Modifier.height(10.dp))
 
                                 Text(
-                                    "No document selected",
+                                    text = "No document selected",
                                     color = colors.onPrimaryContainer
                                 )
                             }
                         }
                     } else {
-                        val imageUri = selectedImageUri!!
-
-                        // Decode a smaller preview so large camera
-                        // photographs do not consume excessive memory.
-                        val preview by produceState<
-                                androidx.compose.ui.graphics.ImageBitmap?
-                                >(
+                        // Decode a reduced image preview off
+                        // the main thread to limit memory use.
+                        val preview by produceState<ImageBitmap?>(
                             initialValue = null,
                             key1 = imageUri
                         ) {
                             value = withContext(Dispatchers.IO) {
                                 try {
-                                    val resolver = context.contentResolver
+                                    val resolver =
+                                        context.contentResolver
 
-                                    val bounds = BitmapFactory.Options().apply {
-                                        inJustDecodeBounds = true
-                                    }
+                                    val bounds =
+                                        BitmapFactory.Options().apply {
+                                            inJustDecodeBounds = true
+                                        }
 
-                                    resolver.openInputStream(imageUri)?.use {
-                                        BitmapFactory.decodeStream(
-                                            it, null, bounds
-                                        )
-                                    }
+                                    resolver.openInputStream(imageUri)
+                                        ?.use {
+                                            BitmapFactory.decodeStream(
+                                                it,
+                                                null,
+                                                bounds
+                                            )
+                                        }
 
                                     var sampleSize = 1
+
                                     while (
                                         bounds.outWidth / sampleSize > 1200 ||
                                         bounds.outHeight / sampleSize > 1200
@@ -336,15 +376,19 @@ fun AddMedicalRecordScreen(
                                         sampleSize *= 2
                                     }
 
-                                    val options = BitmapFactory.Options().apply {
-                                        inSampleSize = sampleSize
-                                    }
+                                    val options =
+                                        BitmapFactory.Options().apply {
+                                            inSampleSize = sampleSize
+                                        }
 
-                                    resolver.openInputStream(imageUri)?.use {
-                                        BitmapFactory.decodeStream(
-                                            it, null, options
-                                        )?.asImageBitmap()
-                                    }
+                                    resolver.openInputStream(imageUri)
+                                        ?.use {
+                                            BitmapFactory.decodeStream(
+                                                it,
+                                                null,
+                                                options
+                                            )?.asImageBitmap()
+                                        }
                                 } catch (_: Exception) {
                                     null
                                 }
@@ -354,7 +398,8 @@ fun AddMedicalRecordScreen(
                         if (preview != null) {
                             Image(
                                 bitmap = preview!!,
-                                contentDescription = "Selected medical document",
+                                contentDescription =
+                                    "Selected medical document",
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(260.dp),
@@ -362,7 +407,7 @@ fun AddMedicalRecordScreen(
                             )
                         } else {
                             Text(
-                                "Loading document preview...",
+                                text = "Loading document preview...",
                                 color = colors.onSurfaceVariant
                             )
                         }
@@ -370,7 +415,7 @@ fun AddMedicalRecordScreen(
                         Spacer(Modifier.height(12.dp))
 
                         Text(
-                            "Document selected",
+                            text = "Document selected",
                             color = colors.primary,
                             fontWeight = FontWeight.Medium
                         )
@@ -385,18 +430,14 @@ fun AddMedicalRecordScreen(
                     }
                 }
 
-                if (scanError != null) {
+                scanError?.let { message ->
                     Spacer(Modifier.height(12.dp))
-
-                    Text(
-                        scanError ?: "",
-                        color = colors.error
-                    )
+                    Text(message, color = colors.error)
                 }
 
                 Spacer(Modifier.height(20.dp))
 
-                // Enabled when ML Kit OCR processing is implemented.
+                // OCR is handled in the following milestone.
                 Button(
                     onClick = {},
                     enabled = false,
@@ -409,7 +450,9 @@ fun AddMedicalRecordScreen(
                 Spacer(Modifier.height(8.dp))
 
                 Text(
-                    "OCR extraction and review will be connected next. No image or extracted information is saved yet.",
+                    text = "OCR extraction and review will be " +
+                            "connected next. No image or extracted " +
+                            "information is saved yet.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
@@ -417,7 +460,7 @@ fun AddMedicalRecordScreen(
 
             RecordEntryMode.MANUAL -> {
                 Text(
-                    "Manual Entry",
+                    text = "Manual Entry",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -429,15 +472,19 @@ fun AddMedicalRecordScreen(
 
                 ClinicalScanCard {
                     RecordTextInput(
-                        "Symptoms", symptoms,
-                        { symptoms = it }, !saving
+                        "Symptoms",
+                        symptoms,
+                        { symptoms = it },
+                        !submitted && !saving
                     )
 
                     Spacer(Modifier.height(14.dp))
 
                     RecordTextInput(
-                        "Diagnosis", diagnosis,
-                        { diagnosis = it }, !saving
+                        "Diagnosis",
+                        diagnosis,
+                        { diagnosis = it },
+                        !submitted && !saving
                     )
                 }
 
@@ -448,22 +495,28 @@ fun AddMedicalRecordScreen(
 
                 ClinicalScanCard {
                     RecordTextInput(
-                        "Treatment", treatment,
-                        { treatment = it }, !saving
+                        "Treatment",
+                        treatment,
+                        { treatment = it },
+                        !submitted && !saving
                     )
 
                     Spacer(Modifier.height(14.dp))
 
                     RecordTextInput(
-                        "Medications", medications,
-                        { medications = it }, !saving
+                        "Medications",
+                        medications,
+                        { medications = it },
+                        !submitted && !saving
                     )
 
                     Spacer(Modifier.height(14.dp))
 
                     RecordTextInput(
-                        "Procedures", procedures,
-                        { procedures = it }, !saving
+                        "Procedures",
+                        procedures,
+                        { procedures = it },
+                        !submitted && !saving
                     )
                 }
 
@@ -474,22 +527,71 @@ fun AddMedicalRecordScreen(
 
                 ClinicalScanCard {
                     RecordTextInput(
-                        "Consultation Notes", notes,
-                        { notes = it }, !saving, 3
+                        "Consultation Notes",
+                        notes,
+                        { notes = it },
+                        !submitted && !saving,
+                        3
                     )
                 }
 
                 Spacer(Modifier.height(16.dp))
 
                 Text(
-                    "Complete at least one clinical field to save.",
+                    text = "Complete at least one clinical field " +
+                            "to save.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
 
-                error?.let {
+                if (queuedLocally) {
+                    Spacer(Modifier.height(16.dp))
+
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = colors.primaryContainer
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text(
+                                text = "Saved on this device",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.onPrimaryContainer
+                            )
+
+                            Spacer(Modifier.height(6.dp))
+
+                            Text(
+                                text = "The medical record is queued " +
+                                        "for synchronization. Reconnect " +
+                                        "to the internet to complete " +
+                                        "the upload.",
+                                color = colors.onPrimaryContainer
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            OutlinedButton(
+                                onClick = {
+                                    stopSaveObserver?.invoke()
+                                    stopSaveObserver = null
+                                    onSaved()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Return to Medical History")
+                            }
+                        }
+                    }
+                }
+
+                error?.let { message ->
                     Spacer(Modifier.height(12.dp))
-                    Text(it, color = colors.error)
+                    Text(message, color = colors.error)
                 }
 
                 Spacer(Modifier.height(20.dp))
@@ -498,9 +600,10 @@ fun AddMedicalRecordScreen(
                     onClick = {
                         if (canSave) {
                             saving = true
+                            submitted = true
+                            queuedLocally = false
                             error = null
 
-                            // Existing manual Firestore workflow.
                             val record = MedicalRecord(
                                 patientId = patient.id,
                                 visitDate = System.currentTimeMillis(),
@@ -513,18 +616,36 @@ fun AddMedicalRecordScreen(
                                 source = "manual"
                             )
 
-                            repository.addMedicalRecord(
-                                patientId = patient.id,
-                                record = record
-                            ) { result ->
-                                saving = false
-                                result
-                                    .onSuccess { onSaved() }
-                                    .onFailure {
-                                        error = it.message
-                                            ?: "Could not save medical record"
+                            stopSaveObserver =
+                                repository.addMedicalRecordOfflineAware(
+                                    patientId = patient.id,
+                                    record = record
+                                ) { status ->
+
+                                    when (status) {
+                                        MedicalRecordSaveStatus.QueuedLocally -> {
+                                            saving = false
+                                            queuedLocally = true
+                                        }
+
+                                        MedicalRecordSaveStatus.Synced -> {
+                                            saving = false
+                                            queuedLocally = false
+                                            stopSaveObserver = null
+                                            onSaved()
+                                        }
+
+                                        is MedicalRecordSaveStatus.Failed -> {
+                                            saving = false
+                                            submitted = false
+                                            queuedLocally = false
+                                            stopSaveObserver = null
+
+                                            error = status.error.message
+                                                ?: "Could not save medical record."
+                                        }
                                     }
-                            }
+                                }
                         }
                     },
                     enabled = canSave,
@@ -537,8 +658,16 @@ fun AddMedicalRecordScreen(
                             strokeWidth = 2.dp,
                             color = colors.onPrimary
                         )
+
                         Spacer(Modifier.width(8.dp))
                         Text("Saving...")
+                    } else if (queuedLocally) {
+                        Icon(
+                            Icons.Filled.CheckCircle,
+                            contentDescription = null
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Queued for Sync")
                     } else {
                         Icon(
                             Icons.Filled.CheckCircle,
@@ -662,7 +791,9 @@ private fun ScanSourceCard(
 }
 
 @Composable
-private fun RecordFormHeading(title: String) {
+private fun RecordFormHeading(
+    title: String
+) {
     Text(
         title,
         style = MaterialTheme.typography.titleLarge,

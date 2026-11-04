@@ -1,113 +1,194 @@
-
 package com.example.vetman01.ui.patients
 
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
-import android.widget.Toast
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.vetman01.data.AppointmentRepository
+import com.example.vetman01.data.AppointmentOfflineRepository
+import com.example.vetman01.data.AppointmentSaveStatus
 import com.example.vetman01.model.Appointment
 import com.example.vetman01.model.Patient
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Allows a veterinarian to schedule an appointment
- * for an existing patient.
+ * Creates a single veterinary appointment, online or offline.
+ *
+ * Duplicate protection:
+ * 1. AtomicBoolean blocks repeated taps immediately.
+ * 2. rememberSaveable preserves one submission ID.
+ * 3. Firestore writes use that ID as the document path.
  */
 @Composable
 fun AddAppointmentScreen(
     patient: Patient,
     onBack: () -> Unit,
     onSaved: () -> Unit,
-    repository: AppointmentRepository = remember {
-        AppointmentRepository()
+    repository: AppointmentOfflineRepository = remember {
+        AppointmentOfflineRepository()
     }
 ) {
     val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
 
-    // Holds the selected appointment date and time.
-    var scheduledAt by remember { mutableLongStateOf(0L) }
+    // One ID per form, rather than a new ID on every tap.
+    val submissionId = rememberSaveable(patient.id) {
+        UUID.randomUUID().toString()
+    }
 
-    var reason by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
-    var saving by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // Unlike a visual disabled state, this changes
+    // synchronously when the first tap is processed.
+    val submissionLocked = remember(patient.id, submissionId) {
+        AtomicBoolean(false)
+    }
 
-    // Display the selected date in a readable format.
+    var scheduledAt by rememberSaveable(patient.id) {
+        mutableLongStateOf(0L)
+    }
+
+    var reason by rememberSaveable(patient.id) {
+        mutableStateOf("")
+    }
+
+    var notes by rememberSaveable(patient.id) {
+        mutableStateOf("")
+    }
+
+    var saving by remember(patient.id) {
+        mutableStateOf(false)
+    }
+
+    var submitted by remember(patient.id) {
+        mutableStateOf(false)
+    }
+
+    var queuedLocally by remember(patient.id) {
+        mutableStateOf(false)
+    }
+
+    var error by remember(patient.id) {
+        mutableStateOf<String?>(null)
+    }
+
+    var stopObserver by remember(patient.id) {
+        mutableStateOf<(() -> Unit)?>(null)
+    }
+
+    // A detached observer does not cancel the pending write.
+    DisposableEffect(patient.id) {
+        onDispose {
+            stopObserver?.invoke()
+        }
+    }
+
     val dateFormat = remember {
-        SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
+        SimpleDateFormat(
+            "dd MMM yyyy, HH:mm",
+            Locale.getDefault()
+        )
     }
 
-    val formattedDate = if (scheduledAt > 0L) {
-        dateFormat.format(Date(scheduledAt))
-    } else {
-        "No date selected"
-    }
+    val formattedDate =
+        if (scheduledAt > 0L) {
+            dateFormat.format(Date(scheduledAt))
+        } else {
+            "No date selected"
+        }
+
+    val canSave =
+        scheduledAt > System.currentTimeMillis() &&
+                !saving &&
+                !submitted &&
+                !submissionLocked.get()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-
         TextButton(
             onClick = onBack,
-            enabled = !saving
+            enabled = !saving && !submitted
         ) {
-            Text("< Back to profile")
+            Text("← Back to Profile")
         }
 
+        Spacer(Modifier.height(12.dp))
+
         Text(
-            "Schedule Appointment",
-            style = MaterialTheme.typography.headlineMedium
+            text = "Schedule Appointment",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
         )
 
         Spacer(Modifier.height(8.dp))
 
-        Text("Patient: ${patient.petName}")
+        Text(
+            text = "Patient: ${patient.petName}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onSurfaceVariant
+        )
 
         Spacer(Modifier.height(20.dp))
 
-        // Open the date picker, followed by the time picker.
         Button(
             onClick = {
-                val calendar = Calendar.getInstance()
+                val today = Calendar.getInstance()
 
                 DatePickerDialog(
                     context,
                     { _, year, month, day ->
-
                         val selected = Calendar.getInstance()
+
                         selected.set(year, month, day)
 
                         TimePickerDialog(
                             context,
                             { _, hour, minute ->
-                                selected.set(Calendar.HOUR_OF_DAY, hour)
-                                selected.set(Calendar.MINUTE, minute)
-                                selected.set(Calendar.SECOND, 0)
-                                selected.set(Calendar.MILLISECOND, 0)
+                                selected.set(
+                                    Calendar.HOUR_OF_DAY,
+                                    hour
+                                )
+                                selected.set(
+                                    Calendar.MINUTE,
+                                    minute
+                                )
+                                selected.set(
+                                    Calendar.SECOND,
+                                    0
+                                )
+                                selected.set(
+                                    Calendar.MILLISECOND,
+                                    0
+                                )
 
-                                scheduledAt = selected.timeInMillis
+                                scheduledAt =
+                                    selected.timeInMillis
+
+                                error = null
                             },
-                            calendar.get(Calendar.HOUR_OF_DAY),
-                            calendar.get(Calendar.MINUTE),
+                            today.get(Calendar.HOUR_OF_DAY),
+                            today.get(Calendar.MINUTE),
                             false
                         ).show()
                     },
-                    calendar.get(Calendar.YEAR),
-                    calendar.get(Calendar.MONTH),
-                    calendar.get(Calendar.DAY_OF_MONTH)
+                    today.get(Calendar.YEAR),
+                    today.get(Calendar.MONTH),
+                    today.get(Calendar.DAY_OF_MONTH)
                 ).apply {
-                    // Prevent selecting dates before today.
                     datePicker.minDate =
                         Calendar.getInstance().apply {
                             set(Calendar.HOUR_OF_DAY, 0)
@@ -117,7 +198,7 @@ fun AddAppointmentScreen(
                         }.timeInMillis
                 }.show()
             },
-            enabled = !saving,
+            enabled = !saving && !submitted,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Select Date and Time")
@@ -132,8 +213,11 @@ fun AddAppointmentScreen(
         OutlinedTextField(
             value = reason,
             onValueChange = { reason = it },
-            label = { Text("Reason for appointment") },
+            label = {
+                Text("Reason for appointment")
+            },
             minLines = 2,
+            enabled = !saving && !submitted,
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -142,59 +226,141 @@ fun AddAppointmentScreen(
         OutlinedTextField(
             value = notes,
             onValueChange = { notes = it },
-            label = { Text("Additional notes") },
+            label = {
+                Text("Additional notes")
+            },
             minLines = 3,
+            enabled = !saving && !submitted,
             modifier = Modifier.fillMaxWidth()
         )
 
+        // Queued is not the same as server-confirmed.
+        if (queuedLocally) {
+            Spacer(Modifier.height(16.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = colors.primaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "Saved on this device",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onPrimaryContainer
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Text(
+                        text = "This appointment is queued for " +
+                                "synchronization. Reconnect to the " +
+                                "internet to complete the save.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onPrimaryContainer
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            stopObserver?.invoke()
+                            stopObserver = null
+                            onSaved()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Return to Patient Profile")
+                    }
+                }
+            }
+        }
+
         error?.let { message ->
             Spacer(Modifier.height(12.dp))
+
             Text(
                 text = message,
-                color = MaterialTheme.colorScheme.error
+                color = colors.error,
+                style = MaterialTheme.typography.bodyMedium
             )
         }
 
         Spacer(Modifier.height(20.dp))
 
-        // Only enable saving for a valid future appointment.
         Button(
             onClick = {
-                if (scheduledAt <= System.currentTimeMillis()) {
-                    error = "Select a future date and time"
-                    return@Button
-                }
+                // Atomic compare-and-set ensures that only
+                // the first tap starts a Firestore operation.
+                if (
+                    !submitted &&
+                    scheduledAt > System.currentTimeMillis() &&
+                    submissionLocked.compareAndSet(false, true)
+                ) {
+                    saving = true
+                    submitted = true
+                    queuedLocally = false
+                    error = null
 
-                saving = true
-                error = null
+                    val appointment = Appointment(
+                        id = submissionId,
+                        patientId = patient.id,
+                        scheduledAt = scheduledAt,
+                        reason = reason.trim(),
+                        notes = notes.trim()
+                    )
 
-                val appointment = Appointment(
-                    patientId = patient.id,
-                    scheduledAt = scheduledAt,
-                    reason = reason.trim(),
-                    notes = notes.trim()
-                )
+                    stopObserver =
+                        repository.addAppointmentOfflineAware(
+                            appointment = appointment,
+                            submissionId = submissionId,
+                            onStatus = { status ->
+                                when (status) {
+                                    AppointmentSaveStatus.QueuedLocally -> {
+                                        saving = false
+                                        queuedLocally = true
+                                    }
 
-                // Save the appointment through the repository.
-                repository.addAppointment(appointment) { result ->
-                    saving = false
+                                    AppointmentSaveStatus.Synced -> {
+                                        saving = false
+                                        queuedLocally = false
+                                        stopObserver = null
+                                        onSaved()
+                                    }
 
-                    result
-                        .onSuccess {
-                            onSaved()
-                        }
-                        .onFailure {
-                            error = it.message
-                                ?: "Could not save appointment"
-                        }
+                                    is AppointmentSaveStatus.Failed -> {
+                                        saving = false
+                                        submitted = false
+                                        queuedLocally = false
+                                        stopObserver = null
+
+                                        error = status.error.message
+                                            ?: "Could not save appointment."
+
+                                        // Permit a genuine retry, but keep
+                                        // the same document ID.
+                                        submissionLocked.set(false)
+                                    }
+                                }
+                            }
+                        )
                 }
             },
-            enabled = scheduledAt > System.currentTimeMillis() && !saving,
+            enabled = canSave,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(
-                if (saving) "Saving..." else "Save Appointment"
+                when {
+                    saving -> "Saving..."
+                    queuedLocally -> "Queued for Sync"
+                    else -> "Save Appointment"
+                }
             )
         }
+
+        Spacer(Modifier.height(24.dp))
     }
 }

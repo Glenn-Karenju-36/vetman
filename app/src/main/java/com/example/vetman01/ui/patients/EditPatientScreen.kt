@@ -17,22 +17,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.example.vetman01.data.PatientRepository
+import com.example.vetman01.data.PatientOfflineEditRepository
+import com.example.vetman01.data.PatientEditSaveStatus
 import com.example.vetman01.model.Patient
 
 /**
- * Edit an existing veterinary patient.
+ * Edit an existing veterinary patient online or offline.
  *
- * Preserves the patient's Firestore ID, veterinarian ID,
- * owner linking fields and creation timestamp.
+ * Preserves patient identity, veterinarian ownership,
+ * pet-owner linking, and creation timestamp.
  */
 @Composable
 fun EditPatientScreen(
     patient: Patient,
     onBack: () -> Unit,
     onSaved: (Patient) -> Unit,
-    repository: PatientRepository = remember {
-        PatientRepository()
+    repository: PatientOfflineEditRepository = remember {
+        PatientOfflineEditRepository()
     }
 ) {
     val colors = MaterialTheme.colorScheme
@@ -42,11 +43,11 @@ fun EditPatientScreen(
         "Poultry", "Donkey", "Camel", "Horse", "Rabbit"
     )
 
-    // Existing custom species remain editable.
-    val initialCustomSpecies = patient.species.isNotBlank() &&
-            speciesOptions.none {
-                it.equals(patient.species, ignoreCase = true)
-            }
+    val initialCustomSpecies =
+        patient.species.isNotBlank() &&
+                speciesOptions.none {
+                    it.equals(patient.species, ignoreCase = true)
+                }
 
     var petName by remember(patient.id) {
         mutableStateOf(patient.petName)
@@ -94,8 +95,41 @@ fun EditPatientScreen(
         mutableStateOf(false)
     }
 
+    var submitted by remember(patient.id) {
+        mutableStateOf(false)
+    }
+
+    var queuedLocally by remember(patient.id) {
+        mutableStateOf(false)
+    }
+
     var error by remember(patient.id) {
         mutableStateOf<String?>(null)
+    }
+
+    var stopSaveObserver by remember(patient.id) {
+        mutableStateOf<(() -> Unit)?>(null)
+    }
+
+    var pendingEditedPatient by remember(patient.id) {
+        mutableStateOf<Patient?>(null)
+    }
+
+    // Stop watching when the screen leaves composition.
+    // Firestore retains the queued edit for synchronization.
+    DisposableEffect(patient.id) {
+        onDispose {
+            stopSaveObserver?.invoke()
+        }
+    }
+
+    fun finishAndReturn() {
+        stopSaveObserver?.invoke()
+        stopSaveObserver = null
+
+        pendingEditedPatient?.let { updated ->
+            onSaved(updated)
+        }
     }
 
     val canSave =
@@ -104,7 +138,8 @@ fun EditPatientScreen(
                 (species != "Other" || otherSpecies.isNotBlank()) &&
                 sex.isNotBlank() &&
                 ownerName.isNotBlank() &&
-                !saving
+                !saving &&
+                !submitted
 
     Column(
         modifier = Modifier
@@ -114,7 +149,7 @@ fun EditPatientScreen(
     ) {
         TextButton(
             onClick = onBack,
-            enabled = !saving
+            enabled = !saving && !submitted
         ) {
             Text("← Back to Profile")
         }
@@ -181,16 +216,16 @@ fun EditPatientScreen(
         Spacer(Modifier.height(26.dp))
 
         // PATIENT INFORMATION
-        EditPatientSection("Patient Information")
+        OfflineEditSection("Patient Information")
 
         Spacer(Modifier.height(12.dp))
 
-        EditPatientFormCard {
-            EditPatientField(
+        OfflineEditFormCard {
+            OfflineEditField(
                 value = petName,
                 onValueChange = { petName = it },
                 label = "Pet Name *",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(18.dp))
@@ -203,40 +238,40 @@ fun EditPatientScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            EditPatientChoiceChips(
+            OfflineEditChoiceChips(
                 options = speciesOptions + "Other",
                 selected = species,
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 onSelect = { species = it }
             )
 
             if (species == "Other") {
                 Spacer(Modifier.height(12.dp))
 
-                EditPatientField(
+                OfflineEditField(
                     value = otherSpecies,
                     onValueChange = { otherSpecies = it },
                     label = "Specify Species *",
-                    enabled = !saving
+                    enabled = !submitted && !saving
                 )
             }
 
             Spacer(Modifier.height(18.dp))
 
-            EditPatientField(
+            OfflineEditField(
                 value = breed,
                 onValueChange = { breed = it },
                 label = "Breed",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(14.dp))
 
-            EditPatientField(
+            OfflineEditField(
                 value = age,
                 onValueChange = { age = it },
                 label = "Age (e.g. 3 years, 6 months)",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(18.dp))
@@ -249,10 +284,10 @@ fun EditPatientScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            EditPatientChoiceChips(
+            OfflineEditChoiceChips(
                 options = listOf("Male", "Female"),
                 selected = sex,
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 onSelect = { sex = it }
             )
         }
@@ -260,37 +295,37 @@ fun EditPatientScreen(
         Spacer(Modifier.height(24.dp))
 
         // OWNER INFORMATION
-        EditPatientSection("Owner Information")
+        OfflineEditSection("Owner Information")
 
         Spacer(Modifier.height(12.dp))
 
-        EditPatientFormCard {
-            EditPatientField(
+        OfflineEditFormCard {
+            OfflineEditField(
                 value = ownerName,
                 onValueChange = { ownerName = it },
                 label = "Owner Name *",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(14.dp))
 
-            EditPatientField(
+            OfflineEditField(
                 value = ownerPhone,
                 onValueChange = { ownerPhone = it },
                 label = "Owner Phone",
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 keyboardType = KeyboardType.Phone
             )
         }
 
         Spacer(Modifier.height(24.dp))
 
-        // NOTES
-        EditPatientSection("Additional Notes")
+        // ADDITIONAL NOTES
+        OfflineEditSection("Additional Notes")
 
         Spacer(Modifier.height(12.dp))
 
-        EditPatientFormCard {
+        OfflineEditFormCard {
             OutlinedTextField(
                 value = notes,
                 onValueChange = { notes = it },
@@ -300,7 +335,7 @@ fun EditPatientScreen(
                 },
                 minLines = 3,
                 maxLines = 7,
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
             )
@@ -313,6 +348,49 @@ fun EditPatientScreen(
             color = colors.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall
         )
+
+        // Offline save confirmation.
+        if (queuedLocally) {
+            Spacer(Modifier.height(16.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = colors.primaryContainer
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "Saved on this device",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onPrimaryContainer
+                    )
+
+                    Spacer(Modifier.height(6.dp))
+
+                    Text(
+                        text = "Your changes are saved locally " +
+                                "and awaiting synchronization. " +
+                                "Reconnect to the internet to " +
+                                "complete the update.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onPrimaryContainer
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = { finishAndReturn() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Return to Patient Profile")
+                    }
+                }
+            }
+        }
 
         error?.let { message ->
             Spacer(Modifier.height(12.dp))
@@ -329,8 +407,8 @@ fun EditPatientScreen(
         Button(
             onClick = {
                 if (canSave) {
-                    // Copy instead of creating a new Patient object.
-                    // This preserves ownerId, vetId, id and createdAt.
+                    // Copying keeps the existing patient ID,
+                    // linked owner, vet ID, and creation date.
                     val updatedPatient = patient.copy(
                         petName = petName.trim(),
                         species = if (species == "Other") {
@@ -346,21 +424,41 @@ fun EditPatientScreen(
                         notes = notes.trim()
                     )
 
+                    pendingEditedPatient = updatedPatient
                     saving = true
+                    submitted = true
+                    queuedLocally = false
                     error = null
 
-                    repository.updatePatient(updatedPatient) { result ->
-                        saving = false
+                    stopSaveObserver =
+                        repository.updatePatientOfflineAware(
+                            updatedPatient
+                        ) { status ->
 
-                        result
-                            .onSuccess {
-                                onSaved(updatedPatient)
+                            when (status) {
+                                PatientEditSaveStatus.QueuedLocally -> {
+                                    saving = false
+                                    queuedLocally = true
+                                }
+
+                                PatientEditSaveStatus.Synced -> {
+                                    saving = false
+                                    queuedLocally = false
+                                    finishAndReturn()
+                                }
+
+                                is PatientEditSaveStatus.Failed -> {
+                                    saving = false
+                                    submitted = false
+                                    queuedLocally = false
+                                    pendingEditedPatient = null
+                                    stopSaveObserver = null
+
+                                    error = status.error.message
+                                        ?: "Could not update patient"
+                                }
                             }
-                            .onFailure {
-                                error = it.message
-                                    ?: "Could not update patient"
-                            }
-                    }
+                        }
                 }
             },
             enabled = canSave,
@@ -375,8 +473,15 @@ fun EditPatientScreen(
                 )
 
                 Spacer(Modifier.width(8.dp))
-
                 Text("Saving...")
+            } else if (queuedLocally) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null
+                )
+
+                Spacer(Modifier.width(8.dp))
+                Text("Queued for Sync")
             } else {
                 Icon(
                     imageVector = Icons.Filled.CheckCircle,
@@ -384,7 +489,6 @@ fun EditPatientScreen(
                 )
 
                 Spacer(Modifier.width(8.dp))
-
                 Text("Save Changes")
             }
         }
@@ -394,10 +498,10 @@ fun EditPatientScreen(
 }
 
 /**
- * Reusable Minimal Clinical section heading.
+ * Minimal Clinical section heading.
  */
 @Composable
-private fun EditPatientSection(title: String) {
+private fun OfflineEditSection(title: String) {
     Text(
         text = title,
         style = MaterialTheme.typography.titleLarge,
@@ -410,7 +514,7 @@ private fun EditPatientSection(title: String) {
  * Reusable form container.
  */
 @Composable
-private fun EditPatientFormCard(
+private fun OfflineEditFormCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
@@ -432,10 +536,10 @@ private fun EditPatientFormCard(
 }
 
 /**
- * Consistent text input.
+ * Consistent patient text input.
  */
 @Composable
-private fun EditPatientField(
+private fun OfflineEditField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
@@ -457,11 +561,11 @@ private fun EditPatientField(
 }
 
 /**
- * Species and sex selection chips.
+ * Wrapping single-choice chips for species and sex.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EditPatientChoiceChips(
+private fun OfflineEditChoiceChips(
     options: List<String>,
     selected: String,
     enabled: Boolean,

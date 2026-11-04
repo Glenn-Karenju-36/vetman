@@ -4,10 +4,22 @@ package com.example.vetman01.data
 import com.example.vetman01.model.Patient
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.MetadataChanges
+
+/**
+ * Tracks the progress of saving a new patient.
+ * A local save is not the same as server confirmation.
+ */
+sealed class PatientSaveStatus {
+    data object QueuedLocally : PatientSaveStatus()
+    data object Synced : PatientSaveStatus()
+    data class Failed(val error: Exception) : PatientSaveStatus()
+}
 
 /**
  * Handles patient records for veterinarians and pet owners.
- * All Firestore patient operations belong in this repository.
+ * Firestore operations remain centralized here.
  */
 class PatientRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
@@ -15,8 +27,8 @@ class PatientRepository(
 ) {
 
     /**
-     * Create a patient owned by the signed-in veterinarian.
-     * A new patient initially has no linked owner account.
+     * Original patient creation method.
+     * Preserved for compatibility with existing callers.
      */
     fun addPatient(
         patient: Patient,
@@ -25,7 +37,11 @@ class PatientRepository(
         val vetId = auth.currentUser?.uid
 
         if (vetId == null) {
-            onResult(Result.failure(Exception("Not signed in")))
+            onResult(
+                Result.failure(
+                    IllegalStateException("Not signed in")
+                )
+            )
             return
         }
 
@@ -42,13 +58,107 @@ class PatientRepository(
             .addOnSuccessListener {
                 onResult(Result.success(Unit))
             }
-            .addOnFailureListener { exception ->
-                onResult(Result.failure(exception))
+            .addOnFailureListener { error ->
+                onResult(Result.failure(error))
             }
     }
 
     /**
-     * Retrieve patients registered by the signed-in veterinarian.
+     * OFFLINE-AWARE PATIENT CREATION
+     *
+     * Firestore applies the write locally before
+     * synchronizing it with the server.
+     *
+     * The generated document ID remains the same,
+     * preventing duplicate patient creation.
+     *
+     * Returns a function that removes the observer.
+     * Removing the observer does not cancel the write.
+     */
+    fun addPatientOfflineAware(
+        patient: Patient,
+        onStatus: (PatientSaveStatus) -> Unit
+    ): () -> Unit {
+        val vetId = auth.currentUser?.uid
+
+        if (vetId == null) {
+            onStatus(
+                PatientSaveStatus.Failed(
+                    IllegalStateException("Not signed in")
+                )
+            )
+            return {}
+        }
+
+        val doc = db.collection("pets").document()
+
+        val toSave = patient.copy(
+            id = doc.id,
+            vetId = vetId,
+            ownerId = "",
+            createdAt = System.currentTimeMillis()
+        )
+
+        var listener: ListenerRegistration? = null
+        var detached = false
+        var queued = false
+        var finished = false
+
+        fun finish(status: PatientSaveStatus) {
+            if (detached || finished) return
+
+            finished = true
+            listener?.remove()
+            listener = null
+
+            onStatus(status)
+        }
+
+        // Observe local writes and server synchronization.
+        listener = doc.addSnapshotListener(
+            MetadataChanges.INCLUDE
+        ) { snapshot, error ->
+
+            if (detached || finished) {
+                return@addSnapshotListener
+            }
+
+            if (error != null) {
+                finish(PatientSaveStatus.Failed(error))
+                return@addSnapshotListener
+            }
+
+            if (snapshot == null || !snapshot.exists()) {
+                return@addSnapshotListener
+            }
+
+            if (snapshot.metadata.hasPendingWrites()) {
+                if (!queued) {
+                    queued = true
+                    onStatus(PatientSaveStatus.QueuedLocally)
+                }
+            } else if (queued) {
+                finish(PatientSaveStatus.Synced)
+            }
+        }
+
+        doc.set(toSave)
+            .addOnSuccessListener {
+                finish(PatientSaveStatus.Synced)
+            }
+            .addOnFailureListener { error ->
+                finish(PatientSaveStatus.Failed(error))
+            }
+
+        return {
+            detached = true
+            listener?.remove()
+            listener = null
+        }
+    }
+
+    /**
+     * Retrieve patients registered by the veterinarian.
      */
     fun getPatients(
         onResult: (Result<List<Patient>>) -> Unit
@@ -56,7 +166,11 @@ class PatientRepository(
         val vetId = auth.currentUser?.uid
 
         if (vetId == null) {
-            onResult(Result.failure(Exception("Not signed in")))
+            onResult(
+                Result.failure(
+                    IllegalStateException("Not signed in")
+                )
+            )
             return
         }
 
@@ -70,18 +184,14 @@ class PatientRepository(
 
                 onResult(Result.success(patients))
             }
-            .addOnFailureListener { exception ->
-                onResult(Result.failure(exception))
+            .addOnFailureListener { error ->
+                onResult(Result.failure(error))
             }
     }
 
     /**
-     * OWNER PATIENTS
-     *
-     * Retrieve only pets linked to the signed-in pet owner.
-     *
-     * Firestore security rules independently verify that
-     * the requesting user is authorized to read these records.
+     * Retrieve pets linked to the signed-in owner.
+     * Security rules enforce ownerId access.
      */
     fun getOwnerPatients(
         onResult: (Result<List<Patient>>) -> Unit
@@ -89,7 +199,11 @@ class PatientRepository(
         val ownerId = auth.currentUser?.uid
 
         if (ownerId == null) {
-            onResult(Result.failure(Exception("Not signed in")))
+            onResult(
+                Result.failure(
+                    IllegalStateException("Not signed in")
+                )
+            )
             return
         }
 
@@ -103,14 +217,14 @@ class PatientRepository(
 
                 onResult(Result.success(patients))
             }
-            .addOnFailureListener { exception ->
-                onResult(Result.failure(exception))
+            .addOnFailureListener { error ->
+                onResult(Result.failure(error))
             }
     }
 
     /**
-     * Update editable patient fields without changing
-     * ownership, identity or creation information.
+     * Update patient details without modifying
+     * identity, ownership, or creation information.
      */
     fun updatePatient(
         patient: Patient,
@@ -119,20 +233,32 @@ class PatientRepository(
         val vetId = auth.currentUser?.uid
 
         if (vetId == null) {
-            onResult(Result.failure(Exception("Not signed in")))
+            onResult(
+                Result.failure(
+                    IllegalStateException("Not signed in")
+                )
+            )
             return
         }
 
         if (patient.id.isBlank()) {
             onResult(
-                Result.failure(Exception("Patient ID is missing"))
+                Result.failure(
+                    IllegalArgumentException(
+                        "Patient ID is missing"
+                    )
+                )
             )
             return
         }
 
         if (patient.vetId != vetId) {
             onResult(
-                Result.failure(Exception("You cannot edit this patient"))
+                Result.failure(
+                    SecurityException(
+                        "You cannot edit this patient"
+                    )
+                )
             )
             return
         }
@@ -154,17 +280,20 @@ class PatientRepository(
             .addOnSuccessListener {
                 onResult(Result.success(Unit))
             }
-            .addOnFailureListener { exception ->
-                onResult(Result.failure(exception))
+            .addOnFailureListener { error ->
+                onResult(Result.failure(error))
             }
     }
 
     /**
-     * EXISTING OWNER LINKING METHOD
+     * LEGACY OWNER LINKING METHOD
      *
-     * Retained for future secure linking implementation.
-     * Current Firestore rules prevent this client-side method
-     * from reading another user's profile or changing ownerId.
+     * Retained for compatibility only.
+     * Secure pet-owner linking now uses invitations
+     * and owner approval.
+     *
+     * Current Firestore rules reject direct ownerId
+     * changes made through this method.
      */
     fun linkPetOwner(
         patientId: String,
@@ -174,25 +303,38 @@ class PatientRepository(
         val vetId = auth.currentUser?.uid
 
         if (vetId == null) {
-            onResult(Result.failure(Exception("Not signed in")))
+            onResult(
+                Result.failure(
+                    IllegalStateException("Not signed in")
+                )
+            )
             return
         }
 
         if (patientId.isBlank() || ownerId.isBlank()) {
             onResult(
-                Result.failure(Exception("Patient or owner ID is missing"))
+                Result.failure(
+                    IllegalArgumentException(
+                        "Patient or owner ID is missing"
+                    )
+                )
             )
             return
         }
 
-        val patientRef = db.collection("pets").document(patientId)
+        val patientRef = db.collection("pets")
+            .document(patientId)
 
         patientRef.get()
             .addOnSuccessListener { document ->
 
                 if (!document.exists()) {
                     onResult(
-                        Result.failure(Exception("Patient not found"))
+                        Result.failure(
+                            IllegalStateException(
+                                "Patient not found"
+                            )
+                        )
                     )
                     return@addOnSuccessListener
                 }
@@ -200,21 +342,28 @@ class PatientRepository(
                 if (document.getString("vetId") != vetId) {
                     onResult(
                         Result.failure(
-                            Exception("You cannot link this patient")
+                            SecurityException(
+                                "You cannot link this patient"
+                            )
                         )
                     )
                     return@addOnSuccessListener
                 }
 
-                db.collection("users").document(ownerId).get()
+                db.collection("users")
+                    .document(ownerId)
+                    .get()
                     .addOnSuccessListener { ownerDoc ->
 
-                        if (!ownerDoc.exists() ||
+                        if (
+                            !ownerDoc.exists() ||
                             ownerDoc.getString("role") != "pet_owner"
                         ) {
                             onResult(
                                 Result.failure(
-                                    Exception("Registered pet owner not found")
+                                    IllegalStateException(
+                                        "Registered pet owner not found"
+                                    )
                                 )
                             )
                             return@addOnSuccessListener
@@ -224,16 +373,16 @@ class PatientRepository(
                             .addOnSuccessListener {
                                 onResult(Result.success(Unit))
                             }
-                            .addOnFailureListener { exception ->
-                                onResult(Result.failure(exception))
+                            .addOnFailureListener { error ->
+                                onResult(Result.failure(error))
                             }
                     }
-                    .addOnFailureListener { exception ->
-                        onResult(Result.failure(exception))
+                    .addOnFailureListener { error ->
+                        onResult(Result.failure(error))
                     }
             }
-            .addOnFailureListener { exception ->
-                onResult(Result.failure(exception))
+            .addOnFailureListener { error ->
+                onResult(Result.failure(error))
             }
     }
 }

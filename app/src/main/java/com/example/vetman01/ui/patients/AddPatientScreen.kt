@@ -10,7 +10,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,13 +20,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.example.vetman01.data.PatientRepository
+import com.example.vetman01.data.PatientSaveStatus
 import com.example.vetman01.model.Patient
 
 /**
- * Registers a new veterinary patient.
+ * Registers a veterinary patient online or offline.
  *
- * Uses the Minimal Clinical theme and preserves
- * the existing PatientRepository saving workflow.
+ * A locally queued write is clearly distinguished
+ * from one confirmed by the Firestore server.
  */
 @Composable
 fun AddPatientScreen(
@@ -51,16 +51,30 @@ fun AddPatientScreen(
     var notes by remember { mutableStateOf("") }
 
     var saving by remember { mutableStateOf(false) }
+    var submitted by remember { mutableStateOf(false) }
+    var queuedLocally by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    // Preserve the original required-field validation.
+    // A listener can outlive the form unless it is
+    // detached when navigation removes this screen.
+    var stopSaveObserver by remember {
+        mutableStateOf<(() -> Unit)?>(null)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            stopSaveObserver?.invoke()
+        }
+    }
+
     val canSave =
         petName.isNotBlank() &&
                 species.isNotBlank() &&
                 (species != "Other" || otherSpecies.isNotBlank()) &&
                 sex.isNotBlank() &&
                 ownerName.isNotBlank() &&
-                !saving
+                !saving &&
+                !submitted
 
     Column(
         modifier = Modifier
@@ -70,7 +84,7 @@ fun AddPatientScreen(
     ) {
         TextButton(
             onClick = onBack,
-            enabled = !saving
+            enabled = !saving && !submitted
         ) {
             Text("← Back to Patients")
         }
@@ -147,7 +161,7 @@ fun AddPatientScreen(
                 value = petName,
                 onValueChange = { petName = it },
                 label = "Pet Name *",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(18.dp))
@@ -168,7 +182,7 @@ fun AddPatientScreen(
                     "Rabbit", "Other"
                 ),
                 selected = species,
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 onSelect = { species = it }
             )
 
@@ -179,7 +193,7 @@ fun AddPatientScreen(
                     value = otherSpecies,
                     onValueChange = { otherSpecies = it },
                     label = "Specify Species *",
-                    enabled = !saving
+                    enabled = !submitted && !saving
                 )
             }
 
@@ -189,7 +203,7 @@ fun AddPatientScreen(
                 value = breed,
                 onValueChange = { breed = it },
                 label = "Breed",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(14.dp))
@@ -198,7 +212,7 @@ fun AddPatientScreen(
                 value = age,
                 onValueChange = { age = it },
                 label = "Age (e.g. 3 years, 6 months)",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(18.dp))
@@ -214,7 +228,7 @@ fun AddPatientScreen(
             PatientChoiceChips(
                 options = listOf("Male", "Female"),
                 selected = sex,
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 onSelect = { sex = it }
             )
         }
@@ -232,7 +246,7 @@ fun AddPatientScreen(
                 value = ownerName,
                 onValueChange = { ownerName = it },
                 label = "Owner Name *",
-                enabled = !saving
+                enabled = !submitted && !saving
             )
 
             Spacer(Modifier.height(14.dp))
@@ -241,7 +255,7 @@ fun AddPatientScreen(
                 value = ownerPhone,
                 onValueChange = { ownerPhone = it },
                 label = "Owner Phone",
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 keyboardType = KeyboardType.Phone
             )
         }
@@ -264,7 +278,7 @@ fun AddPatientScreen(
                 },
                 minLines = 3,
                 maxLines = 7,
-                enabled = !saving,
+                enabled = !submitted && !saving,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
             )
@@ -277,6 +291,54 @@ fun AddPatientScreen(
             color = colors.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall
         )
+
+        // This is not shown as server-saved until
+        // Firestore has acknowledged the write.
+        if (queuedLocally) {
+            Spacer(Modifier.height(16.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = colors.primaryContainer
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "Saved on this device",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onPrimaryContainer
+                    )
+
+                    Spacer(Modifier.height(6.dp))
+
+                    Text(
+                        text = "This patient is queued for Firestore " +
+                                "synchronization. Keep your account " +
+                                "signed in and reconnect to the internet " +
+                                "to complete the upload.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onPrimaryContainer
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            stopSaveObserver?.invoke()
+                            stopSaveObserver = null
+                            onSaved()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Return to Patients")
+                    }
+                }
+            }
+        }
 
         error?.let { message ->
             Spacer(Modifier.height(12.dp))
@@ -294,10 +356,10 @@ fun AddPatientScreen(
             onClick = {
                 if (canSave) {
                     saving = true
+                    submitted = true
+                    queuedLocally = false
                     error = null
 
-                    // Keep the existing Patient model and
-                    // Firestore repository integration unchanged.
                     val patient = Patient(
                         petName = petName.trim(),
                         species = if (species == "Other") {
@@ -313,18 +375,36 @@ fun AddPatientScreen(
                         notes = notes.trim()
                     )
 
-                    repository.addPatient(patient) { result ->
-                        saving = false
+                    stopSaveObserver =
+                        repository.addPatientOfflineAware(
+                            patient
+                        ) { status ->
 
-                        result
-                            .onSuccess {
-                                onSaved()
+                            when (status) {
+                                PatientSaveStatus.QueuedLocally -> {
+                                    // Stop spinning even if no internet.
+                                    saving = false
+                                    queuedLocally = true
+                                }
+
+                                PatientSaveStatus.Synced -> {
+                                    saving = false
+                                    queuedLocally = false
+                                    stopSaveObserver = null
+                                    onSaved()
+                                }
+
+                                is PatientSaveStatus.Failed -> {
+                                    saving = false
+                                    submitted = false
+                                    queuedLocally = false
+                                    stopSaveObserver = null
+
+                                    error = status.error.message
+                                        ?: "Could not save patient"
+                                }
                             }
-                            .onFailure {
-                                error = it.message
-                                    ?: "Could not save patient"
-                            }
-                    }
+                        }
                 }
             },
             enabled = canSave,
@@ -341,6 +421,15 @@ fun AddPatientScreen(
                 Spacer(Modifier.width(8.dp))
 
                 Text("Saving...")
+            } else if (queuedLocally) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null
+                )
+
+                Spacer(Modifier.width(8.dp))
+
+                Text("Queued for Sync")
             } else {
                 Icon(
                     imageVector = Icons.Filled.CheckCircle,
@@ -439,9 +528,7 @@ private fun PatientChoiceChips(
         options.forEach { option ->
             FilterChip(
                 selected = selected == option,
-                onClick = {
-                    onSelect(option)
-                },
+                onClick = { onSelect(option) },
                 enabled = enabled,
                 label = { Text(option) }
             )
