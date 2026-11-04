@@ -12,7 +12,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,7 +20,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.vetman01.data.AppointmentOfflineRepository
 import com.example.vetman01.data.AppointmentRepository
+import com.example.vetman01.data.AppointmentSaveStatus
 import com.example.vetman01.model.Appointment
 import com.example.vetman01.model.Patient
 import java.text.SimpleDateFormat
@@ -30,10 +31,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Displays appointments for the selected patient.
+ * Patient-specific appointment history.
  *
- * Maintains the existing Firestore operations:
- * rescheduling, completion and cancellation.
+ * Rescheduling and cancellation use local-first writes.
+ * Completion retains the existing online-confirmed flow.
  */
 @Composable
 fun AppointmentListScreen(
@@ -41,6 +42,9 @@ fun AppointmentListScreen(
     onBack: () -> Unit,
     repository: AppointmentRepository = remember {
         AppointmentRepository()
+    },
+    offlineRepository: AppointmentOfflineRepository = remember {
+        AppointmentOfflineRepository()
     }
 ) {
     val context = LocalContext.current
@@ -49,108 +53,178 @@ fun AppointmentListScreen(
     var appointments by remember(patient.id) {
         mutableStateOf<List<Appointment>>(emptyList())
     }
-
     var loading by remember(patient.id) {
         mutableStateOf(true)
     }
-
     var error by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
-
     var updatingId by remember(patient.id) {
         mutableStateOf<String?>(null)
     }
-
     var refreshVersion by remember(patient.id) {
         mutableIntStateOf(0)
     }
-
-    // Appointment awaiting cancellation confirmation.
     var appointmentToCancel by remember(patient.id) {
         mutableStateOf<Appointment?>(null)
     }
 
-    // Reload after a successful Firestore update.
-    LaunchedEffect(patient.id, refreshVersion, repository) {
-        loading = true
+    // Each local change is provisional until server confirmation.
+    var pendingId by remember(patient.id) {
+        mutableStateOf<String?>(null)
+    }
+    var saveMessage by remember(patient.id) {
+        mutableStateOf<String?>(null)
+    }
+    var stopObserver by remember(patient.id) {
+        mutableStateOf<(() -> Unit)?>(null)
+    }
 
-        repository.getAppointments { result ->
-            loading = false
-
-            result
-                .onSuccess { allAppointments ->
-                    appointments = allAppointments.filter {
-                        it.patientId == patient.id
-                    }
-                }
-                .onFailure {
-                    error = it.message
-                        ?: "Could not load appointments"
-                }
+    DisposableEffect(patient.id) {
+        onDispose {
+            stopObserver?.invoke()
         }
     }
 
-    // Active appointments first, then historical records.
-    val sortedAppointments = remember(appointments) {
-        appointments.sortedWith(
-            compareBy<Appointment> {
-                if (it.status == "scheduled") 0 else 1
-            }.thenBy {
-                if (it.status == "scheduled") {
-                    it.scheduledAt
-                } else {
-                    -it.scheduledAt
+    LaunchedEffect(patient.id, refreshVersion, repository) {
+        loading = true
+        repository.getAppointments { result ->
+            loading = false
+            result.onSuccess { all ->
+                appointments = all.filter { it.patientId == patient.id }
+            }.onFailure {
+                error = it.message ?: "Could not load appointments"
+            }
+        }
+    }
+
+    // Start a local-first reschedule or cancellation operation.
+    fun startOfflineUpdate(
+        appointment: Appointment,
+        newDate: Long? = null,
+        cancel: Boolean = false
+    ) {
+        if (updatingId != null || pendingId != null) return
+
+        updatingId = appointment.id
+        error = null
+        saveMessage = null
+
+        val callback: (AppointmentSaveStatus) -> Unit = { status ->
+            when (status) {
+                AppointmentSaveStatus.QueuedLocally -> {
+                    updatingId = null
+                    pendingId = appointment.id
+
+                    // Reflect locally queued changes immediately.
+                    appointments = appointments.map { current ->
+                        if (current.id != appointment.id) current
+                        else if (cancel) {
+                            current.copy(status = "cancelled")
+                        } else {
+                            current.copy(
+                                scheduledAt = newDate
+                                    ?: current.scheduledAt,
+                                status = "scheduled"
+                            )
+                        }
+                    }
+
+                    saveMessage =
+                        "Saved on this device. Awaiting synchronization."
+                }
+
+                AppointmentSaveStatus.Synced -> {
+                    updatingId = null
+                    pendingId = null
+                    stopObserver = null
+                    saveMessage = "Appointment synchronized."
+                    refreshVersion++
+                }
+
+                is AppointmentSaveStatus.Failed -> {
+                    updatingId = null
+                    pendingId = null
+                    stopObserver = null
+                    saveMessage = null
+                    error = status.error.message
+                        ?: "Appointment update failed."
+                    refreshVersion++
                 }
             }
-        )
+        }
+
+        stopObserver = if (cancel) {
+            offlineRepository.updateStatusOfflineAware(
+                appointment.id,
+                "cancelled",
+                callback
+            )
+        } else {
+            offlineRepository.rescheduleOfflineAware(
+                appointment.id,
+                newDate ?: appointment.scheduledAt,
+                callback
+            )
+        }
     }
+
+    fun completeAppointment(appointment: Appointment) {
+        if (updatingId != null || pendingId != null) return
+
+        updatingId = appointment.id
+        error = null
+
+        repository.updateAppointmentStatus(
+            appointment.id,
+            "completed"
+        ) { result ->
+            updatingId = null
+            result.onSuccess {
+                refreshVersion++
+            }.onFailure {
+                error = it.message ?: "Update failed"
+            }
+        }
+    }
+
+    val sortedAppointments = appointments.sortedWith(
+        compareBy<Appointment> {
+            if (it.status == "scheduled") 0 else 1
+        }.thenBy {
+            if (it.status == "scheduled") {
+                it.scheduledAt
+            } else {
+                -it.scheduledAt
+            }
+        }
+    )
 
     val scheduledCount = appointments.count {
         it.status == "scheduled"
     }
-
     val completedCount = appointments.count {
         it.status == "completed"
     }
 
-    // Confirmation prevents accidental cancellation.
     appointmentToCancel?.let { appointment ->
         AlertDialog(
-            onDismissRequest = {
-                appointmentToCancel = null
-            },
-            title = {
-                Text("Cancel Appointment?")
-            },
+            onDismissRequest = { appointmentToCancel = null },
+            title = { Text("Cancel Appointment?") },
             text = {
                 Text(
-                    "This appointment will be marked as cancelled. " +
-                            "It will remain in the patient's appointment history."
+                    "This appointment will be marked as cancelled " +
+                            "and retained in the patient's history."
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         appointmentToCancel = null
-                        updatingId = appointment.id
-                        error = null
-
-                        repository.updateAppointmentStatus(
-                            appointment.id,
-                            "cancelled"
-                        ) { result ->
-                            updatingId = null
-
-                            result
-                                .onSuccess {
-                                    refreshVersion++
-                                }
-                                .onFailure {
-                                    error = it.message
-                                        ?: "Cancellation failed"
-                                }
-                        }
+                        startOfflineUpdate(
+                            appointment = appointment,
+                            cancel = true
+                        )
                     }
                 ) {
                     Text(
@@ -161,9 +235,7 @@ fun AppointmentListScreen(
             },
             dismissButton = {
                 TextButton(
-                    onClick = {
-                        appointmentToCancel = null
-                    }
+                    onClick = { appointmentToCancel = null }
                 ) {
                     Text("Keep Appointment")
                 }
@@ -187,53 +259,47 @@ fun AppointmentListScreen(
         Spacer(Modifier.height(12.dp))
 
         Text(
-            text = "Appointments",
+            "Appointments",
             style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = colors.onSurface
+            fontWeight = FontWeight.Bold
         )
-
         Spacer(Modifier.height(5.dp))
-
         Text(
-            text = "Patient: ${patient.petName}",
+            "Patient: ${patient.petName}",
             color = colors.onSurfaceVariant
         )
 
         Spacer(Modifier.height(24.dp))
 
-        // Appointment summary.
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            AppointmentSummaryCard(
-                title = "Scheduled",
-                value = scheduledCount.toString(),
-                modifier = Modifier.weight(1f)
+            AppointmentCountCard(
+                "Scheduled",
+                scheduledCount.toString(),
+                Modifier.weight(1f)
             )
-
-            AppointmentSummaryCard(
-                title = "Completed",
-                value = completedCount.toString(),
-                modifier = Modifier.weight(1f)
+            AppointmentCountCard(
+                "Completed",
+                completedCount.toString(),
+                Modifier.weight(1f)
             )
         }
 
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(24.dp))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
-                imageVector = Icons.Filled.DateRange,
+                Icons.Filled.DateRange,
                 contentDescription = null,
                 tint = colors.primary
             )
-
             Text(
-                text = "Appointment History",
+                "Appointment History",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
@@ -241,29 +307,44 @@ fun AppointmentListScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Errors remain visible without hiding loaded records.
-        error?.let { message ->
+        saveMessage?.let { message ->
             Card(
-                modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = colors.errorContainer
-                ),
-                shape = RoundedCornerShape(12.dp)
+                    containerColor = colors.primaryContainer
+                )
             ) {
                 Text(
-                    text = message,
-                    color = colors.onErrorContainer,
-                    modifier = Modifier.padding(14.dp)
+                    message,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    color = colors.onPrimaryContainer
                 )
             }
+            Spacer(Modifier.height(12.dp))
+        }
 
+        error?.let { message ->
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = colors.errorContainer
+                )
+            ) {
+                Text(
+                    message,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    color = colors.onErrorContainer
+                )
+            }
             Spacer(Modifier.height(12.dp))
         }
 
         when {
             loading -> {
                 Box(
-                    modifier = Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator()
@@ -272,40 +353,38 @@ fun AppointmentListScreen(
 
             sortedAppointments.isEmpty() -> {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
                         containerColor = colors.primaryContainer
-                    ),
-                    shape = RoundedCornerShape(14.dp)
+                    )
                 ) {
                     Text(
-                        text = "No appointments found for this patient.",
-                        modifier = Modifier.padding(20.dp),
-                        color = colors.onPrimaryContainer
+                        "No appointments found for this patient.",
+                        modifier = Modifier.padding(20.dp)
                     )
                 }
             }
 
             else -> {
                 sortedAppointments.forEach { appointment ->
-                    ClinicalAppointmentCard(
+                    PatientAppointmentOfflineCard(
                         appointment = appointment,
                         updating = updatingId == appointment.id,
-                        actionsEnabled = updatingId == null,
+                        pending = pendingId == appointment.id,
+                        actionsEnabled =
+                            updatingId == null && pendingId == null,
                         onReschedule = {
-                            error = null
+                            val initial =
+                                Calendar.getInstance().apply {
+                                    timeInMillis = appointment.scheduledAt
+                                }
 
-                            // Begin with the appointment's current date.
-                            val calendar = Calendar.getInstance().apply {
-                                timeInMillis = appointment.scheduledAt
-                            }
-
-                            val datePicker = DatePickerDialog(
+                            val picker = DatePickerDialog(
                                 context,
                                 { _, year, month, day ->
-                                    val selected = Calendar.getInstance().apply {
-                                        set(year, month, day)
-                                    }
+                                    val selected =
+                                        Calendar.getInstance().apply {
+                                            set(year, month, day)
+                                        }
 
                                     TimePickerDialog(
                                         context,
@@ -318,10 +397,7 @@ fun AppointmentListScreen(
                                                 Calendar.MINUTE,
                                                 minute
                                             )
-                                            selected.set(
-                                                Calendar.SECOND,
-                                                0
-                                            )
+                                            selected.set(Calendar.SECOND, 0)
                                             selected.set(
                                                 Calendar.MILLISECOND,
                                                 0
@@ -331,45 +407,29 @@ fun AppointmentListScreen(
                                                 selected.timeInMillis <=
                                                 System.currentTimeMillis()
                                             ) {
-                                                error = "Select a future date and time."
+                                                error =
+                                                    "Select a future date and time."
                                             } else {
-                                                updatingId = appointment.id
-
-                                                repository.rescheduleAppointment(
-                                                    appointment.id,
-                                                    selected.timeInMillis
-                                                ) { result ->
-                                                    updatingId = null
-
-                                                    result
-                                                        .onSuccess {
-                                                            refreshVersion++
-                                                        }
-                                                        .onFailure {
-                                                            error = it.message
-                                                                ?: "Rescheduling failed"
-                                                        }
-                                                }
+                                                startOfflineUpdate(
+                                                    appointment,
+                                                    newDate =
+                                                        selected.timeInMillis
+                                                )
                                             }
                                         },
-                                        calendar.get(
+                                        initial.get(
                                             Calendar.HOUR_OF_DAY
                                         ),
-                                        calendar.get(
-                                            Calendar.MINUTE
-                                        ),
+                                        initial.get(Calendar.MINUTE),
                                         false
                                     ).show()
                                 },
-                                calendar.get(Calendar.YEAR),
-                                calendar.get(Calendar.MONTH),
-                                calendar.get(
-                                    Calendar.DAY_OF_MONTH
-                                )
+                                initial.get(Calendar.YEAR),
+                                initial.get(Calendar.MONTH),
+                                initial.get(Calendar.DAY_OF_MONTH)
                             )
 
-                            // Prevent choosing previous calendar dates.
-                            datePicker.datePicker.minDate =
+                            picker.datePicker.minDate =
                                 Calendar.getInstance().apply {
                                     set(Calendar.HOUR_OF_DAY, 0)
                                     set(Calendar.MINUTE, 0)
@@ -377,27 +437,10 @@ fun AppointmentListScreen(
                                     set(Calendar.MILLISECOND, 0)
                                 }.timeInMillis
 
-                            datePicker.show()
+                            picker.show()
                         },
                         onComplete = {
-                            updatingId = appointment.id
-                            error = null
-
-                            repository.updateAppointmentStatus(
-                                appointment.id,
-                                "completed"
-                            ) { result ->
-                                updatingId = null
-
-                                result
-                                    .onSuccess {
-                                        refreshVersion++
-                                    }
-                                    .onFailure {
-                                        error = it.message
-                                            ?: "Update failed"
-                                    }
-                            }
+                            completeAppointment(appointment)
                         },
                         onCancel = {
                             appointmentToCancel = appointment
@@ -413,17 +456,13 @@ fun AppointmentListScreen(
     }
 }
 
-/**
- * Displays an appointment count.
- */
 @Composable
-private fun AppointmentSummaryCard(
+private fun AppointmentCountCard(
     title: String,
-    value: String,
+    count: String,
     modifier: Modifier = Modifier
 ) {
     val colors = MaterialTheme.colorScheme
-
     Card(
         modifier = modifier,
         colors = CardDefaults.cardColors(
@@ -436,13 +475,12 @@ private fun AppointmentSummaryCard(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = title,
+                title,
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onPrimaryContainer
             )
-
             Text(
-                text = value,
+                count,
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = colors.primary
@@ -451,13 +489,11 @@ private fun AppointmentSummaryCard(
     }
 }
 
-/**
- * Appointment information and veterinarian actions.
- */
 @Composable
-private fun ClinicalAppointmentCard(
+private fun PatientAppointmentOfflineCard(
     appointment: Appointment,
     updating: Boolean,
+    pending: Boolean,
     actionsEnabled: Boolean,
     onReschedule: () -> Unit,
     onComplete: () -> Unit,
@@ -492,37 +528,23 @@ private fun ClinicalAppointmentCard(
         colors = CardDefaults.cardColors(
             containerColor = colors.surface
         ),
-        border = BorderStroke(
-            1.dp,
-            colors.outlineVariant
-        )
+        border = BorderStroke(1.dp, colors.outlineVariant)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.DateRange,
-                        contentDescription = null,
-                        tint = colors.primary,
-                        modifier = Modifier.size(21.dp)
-                    )
-
-                    Text(
-                        text = date,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
+                Icon(
+                    Icons.Filled.DateRange,
+                    contentDescription = null,
+                    tint = colors.primary
+                )
+                Text(
+                    date,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
 
             Spacer(Modifier.height(12.dp))
@@ -532,90 +554,70 @@ private fun ClinicalAppointmentCard(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = appointment.status
-                        .replaceFirstChar { it.uppercase() },
+                    appointment.status.replaceFirstChar {
+                        it.uppercase()
+                    },
                     modifier = Modifier.padding(
                         horizontal = 12.dp,
                         vertical = 6.dp
                     ),
+                    color = statusColor,
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = statusColor
+                    fontWeight = FontWeight.SemiBold
                 )
             }
 
             Spacer(Modifier.height(14.dp))
-
             Text(
-                text = "Reason",
+                "Reason",
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.onSurfaceVariant
             )
-
-            Spacer(Modifier.height(3.dp))
-
             Text(
-                text = appointment.reason.ifBlank {
-                    "Not provided"
-                },
-                style = MaterialTheme.typography.bodyMedium
+                appointment.reason.ifBlank { "Not provided" }
             )
 
             if (appointment.notes.isNotBlank()) {
                 Spacer(Modifier.height(12.dp))
-
                 Text(
-                    text = "Notes",
+                    "Notes",
                     style = MaterialTheme.typography.labelMedium,
                     color = colors.onSurfaceVariant
                 )
+                Text(appointment.notes)
+            }
 
-                Spacer(Modifier.height(3.dp))
-
+            if (pending) {
+                Spacer(Modifier.height(12.dp))
                 Text(
-                    text = appointment.notes,
-                    style = MaterialTheme.typography.bodyMedium
+                    "Pending synchronization",
+                    color = colors.primary,
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
 
             if (appointment.status == "scheduled") {
                 Spacer(Modifier.height(16.dp))
-
-                HorizontalDivider(
-                    color = colors.outlineVariant
-                )
-
+                HorizontalDivider()
                 Spacer(Modifier.height(14.dp))
 
                 if (updating) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
-
-                        Text(
-                            "Updating appointment...",
-                            color = colors.onSurfaceVariant
-                        )
-                    }
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text("Saving appointment...")
                 } else {
                     Button(
                         onClick = onReschedule,
                         enabled = actionsEnabled,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Edit,
+                            Icons.Filled.Edit,
                             contentDescription = null
                         )
-
                         Spacer(Modifier.width(8.dp))
-
                         Text("Reschedule")
                     }
 
@@ -624,16 +626,13 @@ private fun ClinicalAppointmentCard(
                     OutlinedButton(
                         onClick = onComplete,
                         enabled = actionsEnabled,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.CheckCircle,
+                            Icons.Filled.CheckCircle,
                             contentDescription = null
                         )
-
                         Spacer(Modifier.width(8.dp))
-
                         Text("Mark Completed")
                     }
 
@@ -646,11 +645,7 @@ private fun ClinicalAppointmentCard(
                     ) {
                         Text(
                             "Cancel Appointment",
-                            color = if (actionsEnabled) {
-                                colors.error
-                            } else {
-                                colors.onSurfaceVariant
-                            }
+                            color = colors.error
                         )
                     }
                 }

@@ -1,3 +1,4 @@
+
 package com.example.vetman01.ui.patients
 
 import android.app.DatePickerDialog
@@ -18,7 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.vetman01.data.AppointmentOfflineRepository
 import com.example.vetman01.data.AppointmentRepository
+import com.example.vetman01.data.AppointmentSaveStatus
 import com.example.vetman01.data.PatientRepository
 import com.example.vetman01.model.Appointment
 import com.example.vetman01.model.Patient
@@ -28,8 +31,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Veterinarian-wide appointments screen.
- * Displays appointments across every registered patient.
+ * All appointments belonging to the veterinarian.
+ *
+ * Rescheduling/cancellation are offline-aware.
+ * Completion retains its existing server-confirmed flow.
  */
 @Composable
 fun AllAppointmentsScreen(
@@ -40,6 +45,9 @@ fun AllAppointmentsScreen(
     },
     patientRepository: PatientRepository = remember {
         PatientRepository()
+    },
+    offlineRepository: AppointmentOfflineRepository = remember {
+        AppointmentOfflineRepository()
     }
 ) {
     val colors = MaterialTheme.colorScheme
@@ -63,6 +71,15 @@ fun AllAppointmentsScreen(
     var updatingId by remember {
         mutableStateOf<String?>(null)
     }
+    var pendingId by remember {
+        mutableStateOf<String?>(null)
+    }
+    var saveMessage by remember {
+        mutableStateOf<String?>(null)
+    }
+    var stopObserver by remember {
+        mutableStateOf<(() -> Unit)?>(null)
+    }
     var cancelTarget by remember {
         mutableStateOf<Appointment?>(null)
     }
@@ -73,32 +90,32 @@ fun AllAppointmentsScreen(
         mutableStateOf("All")
     }
 
-    // Reload appointments after a successful modification.
+    DisposableEffect(Unit) {
+        onDispose {
+            stopObserver?.invoke()
+        }
+    }
+
     LaunchedEffect(refreshVersion) {
         appointmentsLoading = true
         appointmentRepository.getAppointments { result ->
-            result
-                .onSuccess {
-                    appointments = it
-                    error = null
-                }
-                .onFailure {
-                    error = it.message
-                        ?: "Unable to load appointments"
-                }
+            result.onSuccess {
+                appointments = it
+                error = null
+            }.onFailure {
+                error = it.message ?: "Unable to load appointments"
+            }
             appointmentsLoading = false
         }
     }
 
-    // Fetch patient names for appointment cards.
     LaunchedEffect(Unit) {
         patientRepository.getPatients { result ->
-            result
-                .onSuccess { patients = it }
-                .onFailure {
-                    error = it.message
-                        ?: "Unable to load patient names"
-                }
+            result.onSuccess {
+                patients = it
+            }.onFailure {
+                error = it.message ?: "Unable to load patient names"
+            }
             patientsLoading = false
         }
     }
@@ -122,9 +139,81 @@ fun AllAppointmentsScreen(
             }
         )
 
-    // Shared status update action.
-    fun updateStatus(appointment: Appointment, status: String) {
-        if (updatingId != null) return
+    // Local-first operation shared by reschedule and cancel.
+    fun startOfflineUpdate(
+        appointment: Appointment,
+        newDate: Long? = null,
+        cancel: Boolean = false
+    ) {
+        if (updatingId != null || pendingId != null) return
+
+        updatingId = appointment.id
+        error = null
+        saveMessage = null
+
+        val callback: (AppointmentSaveStatus) -> Unit = { status ->
+            when (status) {
+                AppointmentSaveStatus.QueuedLocally -> {
+                    updatingId = null
+                    pendingId = appointment.id
+
+                    appointments = appointments.map { current ->
+                        if (current.id != appointment.id) current
+                        else if (cancel) {
+                            current.copy(status = "cancelled")
+                        } else {
+                            current.copy(
+                                scheduledAt = newDate
+                                    ?: current.scheduledAt,
+                                status = "scheduled"
+                            )
+                        }
+                    }
+
+                    saveMessage =
+                        "Saved on this device. Awaiting synchronization."
+                }
+
+                AppointmentSaveStatus.Synced -> {
+                    updatingId = null
+                    pendingId = null
+                    stopObserver = null
+                    saveMessage = "Appointment synchronized."
+                    refreshVersion++
+                }
+
+                is AppointmentSaveStatus.Failed -> {
+                    updatingId = null
+                    pendingId = null
+                    stopObserver = null
+                    saveMessage = null
+                    error = status.error.message
+                        ?: "Appointment update failed."
+                    refreshVersion++
+                }
+            }
+        }
+
+        stopObserver = if (cancel) {
+            offlineRepository.updateStatusOfflineAware(
+                appointment.id,
+                "cancelled",
+                callback
+            )
+        } else {
+            offlineRepository.rescheduleOfflineAware(
+                appointment.id,
+                newDate ?: appointment.scheduledAt,
+                callback
+            )
+        }
+    }
+
+    fun updateStatus(
+        appointment: Appointment,
+        status: String
+    ) {
+        if (updatingId != null || pendingId != null) return
 
         updatingId = appointment.id
         error = null
@@ -134,34 +223,32 @@ fun AllAppointmentsScreen(
             status
         ) { result ->
             updatingId = null
-
-            result
-                .onSuccess { refreshVersion++ }
-                .onFailure {
-                    error = it.message
-                        ?: "Failed to update appointment"
-                }
+            result.onSuccess {
+                refreshVersion++
+            }.onFailure {
+                error = it.message ?: "Failed to update appointment"
+            }
         }
     }
 
-    // Confirm cancellation before updating Firestore.
     cancelTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { cancelTarget = null },
-            title = {
-                Text("Cancel appointment?")
-            },
+            title = { Text("Cancel appointment?") },
             text = {
                 Text(
-                    "The appointment will remain in the patient's " +
-                            "history as cancelled."
+                    "The appointment will remain in the " +
+                            "patient's history as cancelled."
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         cancelTarget = null
-                        updateStatus(target, "cancelled")
+                        startOfflineUpdate(
+                            target,
+                            cancel = true
+                        )
                     }
                 ) {
                     Text(
@@ -201,7 +288,6 @@ fun AllAppointmentsScreen(
         )
 
         Spacer(Modifier.height(4.dp))
-
         Text(
             "Appointments across your patients",
             color = colors.onSurfaceVariant
@@ -209,7 +295,6 @@ fun AllAppointmentsScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Filter appointments without modifying Firestore data.
         Row(
             modifier = Modifier.horizontalScroll(
                 rememberScrollState()
@@ -217,27 +302,36 @@ fun AllAppointmentsScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             listOf(
-                "All",
-                "Scheduled",
-                "Completed",
-                "Cancelled"
+                "All", "Scheduled", "Completed", "Cancelled"
             ).forEach { option ->
                 FilterChip(
                     selected = filter == option,
                     onClick = { filter = option },
-                    label = {
-                        Text(option)
-                    }
+                    label = { Text(option) }
                 )
             }
         }
 
-        if (error != null) {
+        saveMessage?.let { message ->
             Spacer(Modifier.height(8.dp))
-            Text(
-                error ?: "",
-                color = colors.error
-            )
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = colors.primaryContainer
+                )
+            ) {
+                Text(
+                    message,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    color = colors.onPrimaryContainer
+                )
+            }
+        }
+
+        error?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(message, color = colors.error)
         }
 
         Spacer(Modifier.height(10.dp))
@@ -262,13 +356,16 @@ fun AllAppointmentsScreen(
 
             else -> {
                 LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement =
+                        Arrangement.spacedBy(12.dp)
                 ) {
                     items(
                         items = visible,
                         key = { it.id }
                     ) { appointment ->
-                        val patient = byPatient[appointment.patientId]
+
+                        val patient =
+                            byPatient[appointment.patientId]
 
                         val formattedDate = remember(
                             appointment.scheduledAt
@@ -276,9 +373,7 @@ fun AllAppointmentsScreen(
                             SimpleDateFormat(
                                 "dd MMM yyyy, hh:mm a",
                                 Locale.getDefault()
-                            ).format(
-                                Date(appointment.scheduledAt)
-                            )
+                            ).format(Date(appointment.scheduledAt))
                         }
 
                         Card(
@@ -317,7 +412,6 @@ fun AllAppointmentsScreen(
                                         tint = colors.primary,
                                         modifier = Modifier.size(18.dp)
                                     )
-
                                     Text(formattedDate)
                                 }
 
@@ -343,6 +437,15 @@ fun AllAppointmentsScreen(
                                     Text("Notes: ${appointment.notes}")
                                 }
 
+                                if (pendingId == appointment.id) {
+                                    Text(
+                                        "Pending synchronization",
+                                        color = colors.primary,
+                                        style =
+                                            MaterialTheme.typography.bodySmall
+                                    )
+                                }
+
                                 if (patient != null) {
                                     OutlinedButton(
                                         onClick = {
@@ -356,9 +459,12 @@ fun AllAppointmentsScreen(
                                 }
 
                                 if (appointment.status == "scheduled") {
-                                    if (updatingId == appointment.id) {
+                                    if (
+                                        updatingId == appointment.id
+                                    ) {
                                         LinearProgressIndicator(
-                                            modifier = Modifier.fillMaxWidth()
+                                            modifier =
+                                                Modifier.fillMaxWidth()
                                         )
                                     } else {
                                         Button(
@@ -375,7 +481,8 @@ fun AllAppointmentsScreen(
                                                         context,
                                                         { _, year, month, day ->
                                                             val selected =
-                                                                Calendar.getInstance()
+                                                                Calendar
+                                                                    .getInstance()
                                                                     .apply {
                                                                         set(
                                                                             year,
@@ -409,29 +516,12 @@ fun AllAppointmentsScreen(
                                                                     ) {
                                                                         error =
                                                                             "Select a future date and time."
-                                                                    } else if (
-                                                                        updatingId == null
-                                                                    ) {
-                                                                        updatingId =
-                                                                            appointment.id
-                                                                        error = null
-
-                                                                        appointmentRepository
-                                                                            .rescheduleAppointment(
-                                                                                appointment.id,
+                                                                    } else {
+                                                                        startOfflineUpdate(
+                                                                            appointment,
+                                                                            newDate =
                                                                                 selected.timeInMillis
-                                                                            ) { result ->
-                                                                                updatingId = null
-                                                                                result
-                                                                                    .onSuccess {
-                                                                                        refreshVersion++
-                                                                                    }
-                                                                                    .onFailure {
-                                                                                        error =
-                                                                                            it.message
-                                                                                                ?: "Rescheduling failed"
-                                                                                    }
-                                                                            }
+                                                                        )
                                                                     }
                                                                 },
                                                                 initial.get(
@@ -477,7 +567,9 @@ fun AllAppointmentsScreen(
 
                                                 picker.show()
                                             },
-                                            enabled = updatingId == null,
+                                            enabled =
+                                                updatingId == null &&
+                                                        pendingId == null,
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text("Reschedule")
@@ -490,7 +582,9 @@ fun AllAppointmentsScreen(
                                                     "completed"
                                                 )
                                             },
-                                            enabled = updatingId == null,
+                                            enabled =
+                                                updatingId == null &&
+                                                        pendingId == null,
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text("Mark Completed")
@@ -500,7 +594,9 @@ fun AllAppointmentsScreen(
                                             onClick = {
                                                 cancelTarget = appointment
                                             },
-                                            enabled = updatingId == null,
+                                            enabled =
+                                                updatingId == null &&
+                                                        pendingId == null,
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text(
